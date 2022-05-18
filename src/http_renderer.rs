@@ -96,7 +96,7 @@ mod tests {
     fn test_render_response() {
         setup();
 
-        let resp = http::Response::builder()
+        let rsp = http::Response::builder()
             .version(Version::HTTP_11)
             .status(StatusCode::NOT_IMPLEMENTED)
             .header(header::CONTENT_TYPE, "application/octet-stream")
@@ -104,7 +104,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            HttpRenderer::render_response(&resp),
+            HttpRenderer::render_response(&rsp),
             b"HTTP/1.1 501\r\nContent-Type: application/octet-stream\r\n\r\nbody..",
         );
     }

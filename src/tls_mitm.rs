@@ -1,8 +1,6 @@
 use crate::{ProxyEngine, Result};
 use std::net::SocketAddr;
-use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::thread::current;
 use tokio::net::TcpListener;
 use tokio_native_tls::TlsAcceptor;
 use tokio_native_tls::native_tls::{self, Identity};
@@ -34,7 +32,6 @@ impl TlsMitm {
 
         loop {
             let (stream, addr) = listener.accept().await?;
-            let raw_fd = stream.as_raw_fd();
             log::debug!("Accepted {:?}", addr);
 
             let acceptor = acceptor.clone();
@@ -44,9 +41,8 @@ impl TlsMitm {
             let file_dir = self.file_dir.clone();
 
             tokio::spawn(async move {
-                log::debug!("{:?}", current());
                 let stream = acceptor.accept(stream).await?;
-                ProxyEngine::new(stream, Some(raw_fd), Some(conn_addr), Some(client_id), file_dir).run().await
+                ProxyEngine::new(stream, Some(conn_addr), Some(client_id), file_dir).run().await
             });
         }
     }

@@ -63,4 +63,4 @@ ARG PACKAGE_BIN
 COPY --from=BUILD /build/target/x86_64-unknown-linux-musl/release/$PACKAGE_BIN /usr/local/bin/
 
 ENTRYPOINT []
-CMD /bin/sh
+CMD /usr/local/bin/dduct
