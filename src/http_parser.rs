@@ -3,7 +3,7 @@ use http::header::{HeaderMap, HeaderName, HeaderValue};
 use http::version::Version;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 
-const VEC_CAPACITY: usize = 4*1024;
+const VEC_CAPACITY: usize = 8*1024;
 
 enum Line {
     Done,
@@ -140,11 +140,15 @@ impl<R> HttpParser<R> where R: AsyncRead + Unpin {
             Line::Body(_) => unreachable!(),
         }
 
-        match self.parse_headers(builder.headers_mut().unwrap()).await? {
-            Line::Done => return Ok(Some(builder.body(None)?)),
-            Line::Skip => unreachable!(),
-            Line::Some(_) => unreachable!(),
-            Line::Body(body) => return Ok(Some(builder.body(Some(body))?)),
+        if let Some(headers_mut) = builder.headers_mut() {
+            match self.parse_headers(headers_mut).await? {
+                Line::Done => return Ok(Some(builder.body(None)?)),
+                Line::Skip => unreachable!(),
+                Line::Some(_) => unreachable!(),
+                Line::Body(body) => return Ok(Some(builder.body(Some(body))?)),
+            }
+        } else {
+            return Ok(Some(builder.body(None)?))
         }
     }
 
@@ -174,11 +178,15 @@ impl<R> HttpParser<R> where R: AsyncRead + Unpin {
             Line::Body(_) => unreachable!(),
         }
 
-        match self.parse_headers(builder.headers_mut().unwrap()).await? {
-            Line::Done => return Ok(Some(builder.body(None)?)),
-            Line::Skip => unreachable!(),
-            Line::Some(_) => unreachable!(),
-            Line::Body(body) => return Ok(Some(builder.body(Some(body))?)),
+        if let Some(headers_mut) = builder.headers_mut() {
+            match self.parse_headers(headers_mut).await? {
+                Line::Done => return Ok(Some(builder.body(None)?)),
+                Line::Skip => unreachable!(),
+                Line::Some(_) => unreachable!(),
+                Line::Body(body) => return Ok(Some(builder.body(Some(body))?)),
+            }
+        } else {
+            return Ok(Some(builder.body(None)?))
         }
     }
 }

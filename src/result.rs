@@ -5,11 +5,23 @@ pub enum DductError {
     #[error("Bad request")]
     BadRequest,
 
+    #[error("Internal Server Error")]
+    InternalServerError,
+
+    #[error("Not a file")]
+    NotAFile,
+
+    #[error("Redirected")]
+    Redirected,
+
     #[error(transparent)]
-    Http(#[from] http::Error),
+    Errno(#[from] nix::errno::Errno),
 
     #[error(transparent)]
     Io(#[from] std::io::Error),
+
+    #[error(transparent)]
+    Http(#[from] http::Error),
 
     #[error(transparent)]
     Ssl(#[from] openssl::error::ErrorStack),

@@ -1,6 +1,9 @@
 mod double_copy;
 pub use double_copy::*;
 
+mod file_opener;
+pub use file_opener::*;
+
 mod http_parser;
 pub use http_parser::*;
 

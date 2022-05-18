@@ -28,6 +28,19 @@ fn random_string(len: usize) -> String {
     string
 }
 
+async fn generate_files(static_dir: &Path, number_of_files: usize, number_of_blocks: usize) -> Result<()> {
+    let string = random_string(64);
+    for index in 1..=number_of_files {
+        let basename = format!("{}.gz", index.to_string());
+        let mut file = File::create(static_dir.join(basename)).await?;
+        for _ in 0..(16 * number_of_blocks) {
+            file.write(string.as_bytes()).await?;
+            file.write(b"\n").await?;
+        }
+    }
+    Ok(())
+}
+
 fn get_sha1(path: &Path) -> std::io::Result<Sha1> {
     let mut file = std::fs::File::open(path)?;
     let mut hasher = Sha1::new();
@@ -35,15 +48,20 @@ fn get_sha1(path: &Path) -> std::io::Result<Sha1> {
     Ok(hasher)
 }
 
-async fn download_file(proxy_url: &str, url: &str, maybe_path: Option<PathBuf>) -> Result<Child> {
+async fn download_file(maybe_proxy_url: Option<&str>, url: &str, maybe_path: Option<PathBuf>) -> Result<Child> {
+    log::info!("download_file(): {:?}", url);
+
     let mut command = Command::new("curl");
     command
         .arg("--silent")
         .arg("--fail")
         .arg("--proxy-insecure")
-        .arg("--proxy").arg(proxy_url)
         .arg("--insecure")
         .arg(url);
+
+    if let Some(proxy_url) = maybe_proxy_url {
+        command.arg("--proxy").arg(proxy_url);
+    }
 
     if let Some(path) = maybe_path {
         command.arg("--output").arg(path);
@@ -52,6 +70,93 @@ async fn download_file(proxy_url: &str, url: &str, maybe_path: Option<PathBuf>) 
     }
 
     Ok(command.spawn()?)
+}
+
+fn get_files(dirs: Vec<&Path>, files: Vec<&str>) -> Vec<PathBuf> {
+    let (dirs, names) = (
+        dirs.repeat(files.len()),
+        files.repeat(dirs.len()),
+    );
+    let files = dirs.iter()
+        .zip(names.iter())
+        .map(|(dir, name)| dir.join(name))
+        .collect();
+    files
+}
+
+fn verify_cksums(files: Vec<PathBuf>) -> Result<()> {
+    let cksums: Vec<_> = files.iter()
+        .map(|path| { log::debug!("path = {:?}", path); path })
+        .map(|path| get_sha1(path.as_path()).unwrap().finalize())
+        .map(|cksum| { log::debug!("cksum = {:?}", hex::encode(cksum)); cksum })
+        .collect();
+    for cksum in &cksums {
+        assert_eq!(&cksums[0], cksum);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_static() -> Result<()> {
+    setup();
+
+    let work_dir = TempDir::new("dduct")?;
+    log::info!("Work {:?}", work_dir.path());
+
+    let static_dir = TempDir::new("dduct")?;
+    log::info!("Static {:?}", static_dir.path());
+
+    let cert_dir = TempDir::new("dduct")?;
+    log::info!("Certs {:?}", cert_dir.path());
+
+    set_current_dir(work_dir.path())?;
+
+    generate_files(static_dir.path(), 4, 1024).await?;
+
+    let mut ssl_certs = SslCerts::new(cert_dir.path());
+    ssl_certs.generate()?;
+
+    let result = time::timeout(
+        Duration::from_secs(30),
+        future::try_join3(
+            // Helper: serve static files over tcp..
+            HttpProxy::new(
+                ([0, 0, 0, 0], 8001).into(),
+                ([127, 0, 0, 1], 4431).into(),
+                ssl_certs.client_id()?.clone(),
+                static_dir.path(),
+            ).serve(),
+            // Helper: serve static files over tls..
+            TlsMitm::new(
+                ([0, 0, 0, 0], 4432).into(),
+                ssl_certs.server_id()?.clone(),
+                ssl_certs.client_id()?.clone(),
+                static_dir.path(),
+            ).serve(),
+            // Tests: run some requests..
+            async {
+                sleep(Duration::from_secs(4)).await;
+
+                download_file(None, "http://127.0.0.1:8001/1.gz", None).await.unwrap();
+
+                download_file(None, "https://127.0.0.1:4432/2.gz", None).await.unwrap();
+
+                download_file(None, "http://127.0.0.1:8001/3.gz", None).await.unwrap();
+
+                download_file(None, "https://127.0.0.1:4432/4.gz", None).await.unwrap();
+
+                Ok(())
+            },
+        ),
+    ).await;
+    log::debug!("{:?}", result);
+
+    verify_cksums(get_files(
+        vec![work_dir.path(), static_dir.path()],
+        vec!["1.gz", "2.gz", "3.gz", "4.gz"],
+    ))?;
+
+    Ok(())
 }
 
 #[tokio::test]
@@ -72,14 +177,7 @@ async fn test_serial() -> Result<()> {
 
     set_current_dir(work_dir.path())?;
 
-    let string = random_string(64);
-    for index in 1..=4 {
-        let mut file = File::create(static_dir.path().join(index.to_string())).await?;
-        for _ in 0..(16 * 1024) {
-            file.write(string.as_bytes()).await?;
-            file.write(b"\n").await?;
-        }
-    }
+    generate_files(static_dir.path(), 4, 1024).await?;
 
     let mut ssl_certs = SslCerts::new(cert_dir.path());
     ssl_certs.generate()?;
@@ -113,17 +211,17 @@ async fn test_serial() -> Result<()> {
             async {
                 sleep(Duration::from_secs(8)).await;
 
-                download_file("http://127.0.0.1:8003", "http://127.0.0.1:8001/1", None).await.unwrap();
-                download_file("http://127.0.0.1:8003", "http://127.0.0.1:8001/1", None).await.unwrap();
+                download_file(Some("http://127.0.0.1:8003"), "http://127.0.0.1:8001/1.gz", None).await.unwrap();
+                download_file(Some("http://127.0.0.1:8003"), "http://127.0.0.1:8001/1.gz", None).await.unwrap();
 
-                download_file("http://127.0.0.1:8003", "https://127.0.0.1:4432/2", None).await.unwrap();
-                download_file("http://127.0.0.1:8003", "https://127.0.0.1:4432/2", None).await.unwrap();
+                download_file(Some("http://127.0.0.1:8003"), "https://127.0.0.1:4432/2.gz", None).await.unwrap();
+                download_file(Some("http://127.0.0.1:8003"), "https://127.0.0.1:4432/2.gz", None).await.unwrap();
 
-                download_file("https://127.0.0.1:4433", "http://127.0.0.1:8001/3", None).await.unwrap();
-                download_file("https://127.0.0.1:4433", "http://127.0.0.1:8001/3", None).await.unwrap();
+                download_file(Some("https://127.0.0.1:4433"), "http://127.0.0.1:8001/3.gz", None).await.unwrap();
+                download_file(Some("https://127.0.0.1:4433"), "http://127.0.0.1:8001/3.gz", None).await.unwrap();
 
-                download_file("https://127.0.0.1:4433", "https://127.0.0.1:4432/4", None).await.unwrap();
-                download_file("https://127.0.0.1:4433", "https://127.0.0.1:4432/4", None).await.unwrap();
+                download_file(Some("https://127.0.0.1:4433"), "https://127.0.0.1:4432/4.gz", None).await.unwrap();
+                download_file(Some("https://127.0.0.1:4433"), "https://127.0.0.1:4432/4.gz", None).await.unwrap();
 
                 Ok(())
             },
@@ -131,22 +229,11 @@ async fn test_serial() -> Result<()> {
     ).await;
     log::debug!("{:?}", result);
 
-    // Verify if source, cached and output files are all identical.
-    let (dirs, names) = (
-        [work_dir.path(), static_dir.path(), file_dir.path()].repeat(4),
-        ["1", "2", "3", "4"].repeat(3),
-    );
-    let files = dirs.iter()
-        .zip(names.iter())
-        .map(|(dir, name)| dir.join(name));
-    let cksums: Vec<_> = files
-        .map(|path| { log::debug!("path = {:?}", path); path })
-        .map(|path| get_sha1(path.as_path()).unwrap().finalize())
-        .map(|cksum| { log::debug!("cksum = {:?}", hex::encode(cksum)); cksum })
-        .collect();
-    for cksum in &cksums {
-        assert_eq!(&cksums[0], cksum);
-    }
+    verify_cksums(get_files(
+        vec![work_dir.path(), static_dir.path(), file_dir.path()],
+        vec!["1.gz", "2.gz", "3.gz", "4.gz"],
+    ))?;
+
     Ok(())
 }
 
@@ -168,14 +255,7 @@ async fn test_parallel() -> Result<()> {
 
     set_current_dir(work_dir.path())?;
 
-    let string = random_string(64);
-    for index in 1..=1 {
-        let mut file = File::create(static_dir.path().join(index.to_string())).await?;
-        for _ in 0..(256 * 1024) {
-            file.write(string.as_bytes()).await?;
-            file.write(b"\n").await?;
-        }
-    }
+    generate_files(static_dir.path(), 1, 16 * 1024).await?;
 
     let mut ssl_certs = SslCerts::new(cert_dir.path());
     ssl_certs.generate()?;
@@ -201,38 +281,30 @@ async fn test_parallel() -> Result<()> {
             // Tests: run some requests..
             async {
                 sleep(Duration::from_secs(8)).await;
-                download_file("https://127.0.0.1:4435", "https://127.0.0.1:4434/1", Some("A".into())).await.unwrap();
+                download_file(Some("https://127.0.0.1:4435"), "https://127.0.0.1:4434/1.gz", Some("A".into())).await.unwrap();
                 Ok(())
             },
             async {
                 sleep(Duration::from_secs(8)).await;
-                download_file("https://127.0.0.1:4435", "https://127.0.0.1:4434/1", Some("B".into())).await.unwrap();
+                download_file(Some("https://127.0.0.1:4435"), "https://127.0.0.1:4434/1.gz", Some("B".into())).await.unwrap();
                 Ok(())
             },
             async {
                 sleep(Duration::from_secs(8)).await;
-                download_file("https://127.0.0.1:4435", "https://127.0.0.1:4434/1", Some("C".into())).await.unwrap();
+                download_file(Some("https://127.0.0.1:4435"), "https://127.0.0.1:4434/1.gz", Some("C".into())).await.unwrap();
                 Ok(())
             },
         ),
     ).await;
     log::debug!("{:?}", result);
 
-    // Verify if source, cached and output files are all identical.
-    let files = vec![
-        static_dir.path().join("1"),
-        file_dir.path().join("1"),
+    verify_cksums(vec![
+        static_dir.path().join("1.gz"),
+        file_dir.path().join("1.gz"),
         work_dir.path().join("A"),
         work_dir.path().join("B"),
         work_dir.path().join("C"),
-    ];
-    let cksums: Vec<_> = files.iter()
-        .map(|path| { log::debug!("path = {:?}", path); path })
-        .map(|path| get_sha1(path.as_path()).unwrap().finalize())
-        .map(|cksum| { log::debug!("cksum = {:?}", hex::encode(cksum)); cksum })
-        .collect();
-    for cksum in &cksums {
-        assert_eq!(&cksums[0], cksum);
-    }
+    ])?;
+
     Ok(())
 }

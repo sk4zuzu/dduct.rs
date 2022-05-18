@@ -1,16 +1,12 @@
-use crate::{DductError, HttpParser, HttpRenderer, Request, Response, Result, double_copy};
+use crate::{DductError, FileOpener, HttpParser, HttpRenderer, Request, Response, Result, double_copy};
 use futures::future::{self};
 use http::header::{self};
 use http::method::Method;
 use http::status::StatusCode;
 use http::uri::{Scheme, Uri};
-use nix::fcntl::{FlockArg, flock};
-use nix::unistd::close;
-use std::fs::create_dir_all;
 use std::net::SocketAddr;
-use std::path::PathBuf;
-use std::os::unix::io::{AsRawFd, RawFd};
-use tokio::fs::{File, OpenOptions, rename};
+use std::path::{Path, PathBuf};
+use tokio::fs::{File, rename};
 use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_native_tls::{TlsConnector, TlsStream};
@@ -18,21 +14,22 @@ use tokio_native_tls::native_tls::{self, Identity};
 
 pub struct ProxyEngine<S> {
     pub stream: S,
-    pub maybe_raw_fd: Option<RawFd>,
+    pub closed: bool,
     pub maybe_mitm_addr: Option<SocketAddr>,
     pub maybe_client_id: Option<Identity>,
-    pub file_dir: PathBuf,
+    pub file_opener: FileOpener,
 }
 
 impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
     pub fn new(
         stream: S,
-        maybe_raw_fd: Option<RawFd>,
         maybe_mitm_addr: Option<SocketAddr>,
         maybe_client_id: Option<Identity>,
         file_dir: PathBuf,
     ) -> Self {
-        Self { stream, maybe_raw_fd, maybe_mitm_addr, maybe_client_id, file_dir }
+        let closed = false;
+        let file_opener = FileOpener::new(file_dir);
+        Self { stream, closed, maybe_mitm_addr, maybe_client_id, file_opener }
     }
 
     async fn recv_request(&mut self) -> Result<Option<Request>> {
@@ -63,63 +60,40 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
         self.send_payload(&payload).await
     }
 
-    async fn send_response(&mut self, resp: &Response) -> Result<()> {
-        let payload = HttpRenderer::render_response(&resp);
+    async fn send_response(&mut self, rsp: &Response) -> Result<()> {
+        let payload = HttpRenderer::render_response(&rsp);
         self.send_payload(&payload).await
     }
 
     async fn send_empty_response(&mut self, status: StatusCode) -> Result<()> {
-        let resp = http::Response::builder()
+        let rsp = http::Response::builder()
             .status(status)
             .header(header::CONNECTION, "close")
             .body(None)
             .unwrap();
-        self.send_response(&resp).await
+        self.send_response(&rsp).await
     }
 
-    async fn open_file_ro(&self, req: &Request) -> Result<(File, u64)> {
-        let path = self.file_dir
-            .join(req.uri().path().strip_prefix('/').unwrap());
-        let file = OpenOptions::new()
-            .read(true)
-            .write(false)
-            .open(path)
-            .await?;
-        let metadata = file.metadata().await?;
-        Ok((file, metadata.len()))
+    async fn send_file(&mut self, file: &mut File, maybe_length: Option<u64>) -> Result<()> {
+        let mut build = http::Response::builder();
+        build = build.status(StatusCode::OK);
+        build = build.header(header::CONNECTION, "close");
+        if let Some(length) = maybe_length { build = build.header(header::CONTENT_LENGTH, length); }
+        let rsp = build.body(Some("".into())).unwrap();
+        self.send_response(&rsp).await?;
+        self.copy_from(file).await?;
+        Ok(())
     }
 
-    async fn open_partial_file_wo_or_ro(&self, req: &Request) -> Result<(File, PathBuf, bool)> {
-        let path = self.file_dir
-            .join(req.uri().path().strip_prefix('/').unwrap());
-
-        let dir = path.parent().unwrap();
-        create_dir_all(dir)?;
-        let name = path.file_name().unwrap().to_str().unwrap();
-        let tmp_name = format!("{}.{}", name, "dduct");
-        let tmp_path = dir.join(tmp_name);
-
-        // Try to open write-only (with lock).
-        if !tmp_path.exists() {
-            let tmp_file = OpenOptions::new()
-                .read(false)
-                .write(true)
-                .truncate(true)
-                .create(true)
-                .open(tmp_path.as_path())
-                .await?;
-            if let Ok(()) = flock(tmp_file.as_raw_fd(), FlockArg::LockExclusiveNonblock) {
-                return Ok((tmp_file, tmp_path, true))
-            }
-        }
-
-        let tmp_file = OpenOptions::new()
-            .read(true)
-            .write(false)
-            .open(tmp_path.as_path())
-            .await?;
-
-        return Ok((tmp_file, tmp_path, false))
+    async fn send_partial_file(&mut self, file: &mut File, tmp_path: &Path) -> Result<()> {
+        let rsp = http::Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONNECTION, "close")
+            .body(Some("".into()))
+            .unwrap();
+        self.send_response(&rsp).await?;
+        while { self.copy_from(file).await?; tmp_path.exists() } {}
+        Ok(())
     }
 
     async fn copy_from<A>(&mut self, stream_a: &mut A) -> Result<()>
@@ -160,20 +134,19 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
         Ok(())
     }
 
-    async fn tcp_connect(&mut self, req: &mut Request) -> Result<(TcpStream, RawFd)> {
-        log::debug!("tcp_connect(): {:?}", req);
+    async fn tcp_connect(&mut self, req: &mut Request) -> Result<TcpStream> {
+        log::debug!("tcp_connect(): {:?} {:?}", req.uri(), req.headers());
 
         let host = req.uri().host().unwrap();
         let port = req.uri().port().map(|p| p.as_u16()).or(Some(80)).unwrap();
 
         let stream = TcpStream::connect(format!("{}:{}", host, port)).await?;
-        let raw_fd = stream.as_raw_fd();
 
-        Ok((stream, raw_fd))
+        Ok(stream)
     }
 
-    async fn tls_connect(&mut self, req: &mut Request) -> Result<(TlsStream<TcpStream>, RawFd)> {
-        log::debug!("tls_connect(): {:?}", req);
+    async fn tls_connect(&mut self, req: &mut Request) -> Result<TlsStream<TcpStream>> {
+        log::debug!("tls_connect(): REQ {:?} {:?}", req.uri(), req.headers());
 
         let uri: Uri = req.headers()
             .get(header::HOST)
@@ -192,131 +165,130 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
         let connector = TlsConnector::from(connector);
 
         let stream = TcpStream::connect(format!("{}:{}", host, port)).await?;
-        let raw_fd = stream.as_raw_fd();
-
         let stream = connector.connect(host, stream).await?;
 
-        Ok((stream, raw_fd))
+        Ok(stream)
     }
 
-    async fn _proxy_request<P>(&mut self, req: &mut Request, maybe_file: Option<File>, peer_stream: &mut P) -> Result<()>
+    async fn _proxy_request<P>(&mut self, req: &mut Request,
+                               cached: bool, maybe_path: Option<PathBuf>,
+                               peer_engine: &mut ProxyEngine<P>) -> Result<()>
     where
         P: AsyncReadExt + AsyncWriteExt + Unpin,
     {
-        let path = req.uri().path();
-        *req.uri_mut() = path.parse()
-            .map_err(|_| DductError::BadRequest)?;
+        log::debug!("proxy_request(): REQ {:?} {:?}", req.uri(), req.headers());
 
         // Make sure server closes the connection.
-        req.headers_mut()
-            .remove(header::CONNECTION);
-        req.headers_mut()
-            .insert(header::CONNECTION, "close".parse().unwrap());
+        req.headers_mut().remove(header::CONNECTION);
+        req.headers_mut().insert(header::CONNECTION, "close".parse().unwrap());
 
-        let mut peer_engine = ProxyEngine::new(peer_stream, None, None, None, self.file_dir.clone());
         peer_engine.send_request(req).await?;
 
-        if let Some(resp) = peer_engine.recv_response().await? {
-            self.send_response(&resp).await?;
-
-            if resp.status() == StatusCode::OK {
-                if let Some(ref body) = resp.body() {
-                    if let Some(mut file) = maybe_file {
-                        file.write_all(body).await?;
-                        peer_engine.dcopy_to(&mut self.stream, &mut file).await?;
-                    } else {
-                        peer_engine.copy_to(&mut self.stream).await?;
+        if let Some(rsp) = peer_engine.recv_response().await? {
+            log::debug!("proxy_request(): RSP {:?} {:?}", rsp.status(), rsp.headers());
+            match rsp.status() {
+                StatusCode::NOT_FOUND | StatusCode::UNAUTHORIZED => {
+                    self.send_response(&rsp).await?;
+                    peer_engine.copy_to(&mut self.stream).await
+                },
+                StatusCode::MOVED_PERMANENTLY | StatusCode::TEMPORARY_REDIRECT | StatusCode::PERMANENT_REDIRECT => {
+                    let referer = format!("https://{}{}",
+                        req.headers().get(header::HOST).unwrap().to_str().unwrap(),
+                        req.uri().path(),
+                    );
+                    let location = rsp.headers().get(header::LOCATION).unwrap();
+                    let uri = location.to_str().unwrap().parse::<Uri>().unwrap();
+                    *req.uri_mut() = uri.clone();
+                    req.headers_mut().remove(header::AUTHORIZATION);
+                    req.headers_mut().remove(header::HOST);
+                    req.headers_mut().insert(header::HOST, uri.host().unwrap().parse().unwrap());
+                    req.headers_mut().insert(header::REFERER, referer.parse().unwrap());
+                    Err(DductError::Redirected)
+                },
+                StatusCode::OK if cached => {
+                    match self.file_opener.open_partial_wo_or_ro(req, maybe_path).await {
+                        Ok((mut file, tmp_path, path, write_only)) => {
+                            if write_only {
+                                if let Some(ref body) = rsp.body() { file.write_all(body).await?; }
+                                self.send_response(&rsp).await?;
+                                peer_engine.dcopy_to(&mut self.stream, &mut file).await?;
+                                rename(tmp_path.as_path(), path.as_path()).await?;
+                                Ok(())
+                            } else {
+                                peer_engine.shutdown().await.ok();
+                                self.send_partial_file(&mut file, tmp_path.as_path()).await
+                            }
+                        },
+                        Err(e) => Err(e),
                     }
+                },
+                _ => {
+                    self.send_response(&rsp).await?;
+                    peer_engine.copy_to(&mut self.stream).await
                 }
             }
+        } else {
+            Err(DductError::InternalServerError)
         }
-
-        Ok(())
     }
 
-    async fn proxy_request(&mut self, req: &mut Request, maybe_file: Option<File>) -> Result<()> {
+    async fn proxy_request(&mut self, req: &mut Request, cached: bool) -> Result<()> {
+        let path = self.file_opener.get_path(req);
         if req.uri().scheme() == Some(&Scheme::HTTP) {
-            let (mut peer_stream, peer_raw_fd) = self.tcp_connect(req).await?;
-            let result = self._proxy_request(req, maybe_file, &mut peer_stream).await;
-            peer_stream.shutdown().await.ok();
-            close(peer_raw_fd).ok();
-            result
+            loop {
+                let peer_stream = self.tcp_connect(req).await?;
+                let mut peer_engine = ProxyEngine::new(peer_stream, None, None, self.file_opener.file_dir.clone());
+                let result = self._proxy_request(req, cached, Some(path.clone()), &mut peer_engine).await;
+                peer_engine.shutdown().await.ok();
+                if let Err(DductError::Redirected) = result { continue; }
+                return result;
+            }
         } else {
-            // Assume HTTPS..
-            let (mut peer_stream, peer_raw_fd) = self.tls_connect(req).await?;
-            let result = self._proxy_request(req, maybe_file, &mut peer_stream).await;
-            peer_stream.shutdown().await.ok();
-            close(peer_raw_fd).ok();
-            result
+            loop {
+                let peer_stream = self.tls_connect(req).await?;
+                let mut peer_engine = ProxyEngine::new(peer_stream, None, None, self.file_opener.file_dir.clone());
+                let result = self._proxy_request(req, cached, Some(path.clone()), &mut peer_engine).await;
+                peer_engine.shutdown().await.ok();
+                if let Err(DductError::Redirected) = result { continue; }
+                return result;
+            }
         }
     }
 
     async fn handle_connect(&mut self, req: &Request) -> Result<()> {
-        log::debug!("handle_connect(): {:?}", req);
+        log::debug!("handle_connect(): REQ {:?} {:?}", req.uri(), req.headers());
         let mitm_addr = self.maybe_mitm_addr.unwrap();
         let mut peer_stream = TcpStream::connect(mitm_addr).await?;
-        let resp = http::Response::builder()
+        let rsp = http::Response::builder()
             .status(StatusCode::OK)
             .body(Some("".into()))
             .unwrap();
-        self.send_response(&resp).await?;
+        self.send_response(&rsp).await?;
         self.glue_with(&mut peer_stream).await?;
         Ok(())
     }
 
     async fn handle_head(&mut self, req: &mut Request) -> Result<()> {
-        log::debug!("handle_head(): {:?}", req);
-        match self.open_file_ro(req).await {
-            Ok((_, length)) => {
-                let resp = http::Response::builder()
-                    .status(StatusCode::OK)
-                    .header(header::CONTENT_LENGTH, length)
-                    .header(header::CONNECTION, "close")
-                    .body(None)
-                    .unwrap();
-                self.send_response(&resp).await
-            },
-            Err(DductError::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound => {
-                self.proxy_request(req, None).await
-            },
-            Err(e) => Err(e),
-        }
+        log::debug!("handle_head(): REQ {:?} {:?}", req.uri(), req.headers());
+        self.proxy_request(req, false).await
     }
 
     async fn handle_get(&mut self, req: &mut Request) -> Result<()> {
-        log::debug!("handle_get(): {:?}", req);
-        match self.open_file_ro(req).await {
+        log::debug!("handle_get(): REQ {:?} {:?}", req.uri(), req.headers());
+        match self.file_opener.open_ro(req).await {
             Ok((mut file, length)) => {
-                let resp = http::Response::builder()
-                    .status(StatusCode::OK)
-                    .header(header::CONTENT_LENGTH, length)
-                    .header(header::CONNECTION, "close")
-                    .body(Some("".into()))
-                    .unwrap();
-                self.send_response(&resp).await?;
-                self.copy_from(&mut file).await?;
-                Ok(())
+                self.send_file(&mut file, Some(length)).await
+            },
+            Err(DductError::NotAFile) => {
+                self.proxy_request(req, false).await
             },
             Err(DductError::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound => {
-                let path = self.file_dir
-                    .join(req.uri().path().strip_prefix('/').unwrap());
-
-                match self.open_partial_file_wo_or_ro(req).await {
-                    Ok((mut file, tmp_path, write_only)) => {
-                        if write_only {
-                            self.proxy_request(req, Some(file)).await?;
-                            rename(tmp_path.as_path(), path.as_path()).await?;
-                            Ok(())
-                        } else {
-                            let resp = http::Response::builder()
-                                .status(StatusCode::OK)
-                                .header(header::CONNECTION, "close")
-                                .body(Some("".into()))
-                                .unwrap();
-                            self.send_response(&resp).await?;
-                            while { self.copy_from(&mut file).await?; tmp_path.exists() } {}
-                            Ok(())
-                        }
+                match self.file_opener.open_partial_ro(req).await {
+                    Ok((mut file, tmp_path, _)) => {
+                        self.send_partial_file(&mut file, tmp_path.as_path()).await
+                    },
+                    Err(DductError::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                        self.proxy_request(req, self.file_opener.is_cached(req)).await
                     },
                     Err(e) => Err(e),
                 }
@@ -326,7 +298,7 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
     }
 
     async fn handle_any(&mut self, req: &Request) -> Result<()> {
-        log::debug!("handle_any(): {:?}", req);
+        log::debug!("handle_any(): REQ {:?} {:?}", req.uri(), req.headers());
         self.send_empty_response(StatusCode::NOT_IMPLEMENTED).await
     }
 
@@ -345,10 +317,18 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
     async fn dispatch_error(&mut self, error: &DductError) -> Result<()> {
         let status = match error {
             DductError::BadRequest => StatusCode::BAD_REQUEST,
-            DductError::Io(ref e) if e.kind() == std::io::ErrorKind::NotFound => StatusCode::NOT_FOUND,
+            DductError::InternalServerError => StatusCode::INTERNAL_SERVER_ERROR,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         self.send_empty_response(status).await
+    }
+
+    pub async fn shutdown(&mut self) -> Result<()> {
+        if !self.closed {
+            self.stream.shutdown().await.ok();
+            self.closed = true;
+        }
+        Ok(())
     }
 
     pub async fn run(&mut self) -> Result<()> {
@@ -356,10 +336,7 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
             log::error!("{:?}", err);
             self.dispatch_error(err).await.ok();
         }
-        self.stream.shutdown().await.ok();
-        if let Some(raw_fd) = self.maybe_raw_fd {
-            close(raw_fd).ok();
-        }
+        self.shutdown().await.ok();
         Ok(())
     }
 }

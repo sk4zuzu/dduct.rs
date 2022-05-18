@@ -23,6 +23,8 @@ const CA_CN: &str = "dduct";
 const SERVER_CN: &str = "*.dduct.lh";
 const CLIENT_CN: &str = "*.dduct.lh";
 
+const SERVER_SANS: &'static [&'static str] = &["*.docker.io"];
+
 const P12_PASSWORD: &str = "dduct";
 const P12_NAME: &str = "dduct";
 
@@ -243,9 +245,9 @@ impl SslCerts {
         builder.append_extension(ext)?;
 
         let context = builder.x509v3_context(Some(issuer), None);
-        let ext = SubjectAlternativeName::new()
-            .dns(SERVER_CN)
-            .build(&context)?;
+        let mut sans = SubjectAlternativeName::new();
+        for san in SERVER_SANS { sans.dns(san); }
+        let ext = sans.build(&context)?;
         builder.append_extension(ext)?;
 
         Ok(())
