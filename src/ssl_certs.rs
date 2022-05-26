@@ -23,7 +23,7 @@ const CA_CN: &str = "dduct";
 const SERVER_CN: &str = "*.dduct.lh";
 const CLIENT_CN: &str = "*.dduct.lh";
 
-const SERVER_SANS: &'static [&'static str] = &["*.docker.io"];
+const SERVER_SANS: &'static [&'static str] = &["*.docker.io", "*.gcr.io"];
 
 const P12_PASSWORD: &str = "dduct";
 const P12_NAME: &str = "dduct";

@@ -69,4 +69,4 @@ dind-exec:
 
 dind-pull:
 	docker exec -t $(PACKAGE_NAME)-dind \
-	/bin/sh -ec '(update-ca-certificates ||:); (docker rmi alpine:latest ||:); docker pull alpine:latest'
+	/bin/sh -ec '(update-ca-certificates ||:); (docker rmi k8s.gcr.io/pause:3.4.1 ||:); docker pull k8s.gcr.io/pause:3.4.1'
