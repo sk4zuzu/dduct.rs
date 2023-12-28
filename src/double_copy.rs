@@ -21,7 +21,7 @@ where
     pos1: usize,
     pos2: usize,
     cap: usize,
-    buf: Box<[u8; BUFFER_SIZE]>,
+    buf: ReadBuf<'a>,
 }
 
 pub async fn double_copy<'a, R, W1, W2>(
@@ -43,7 +43,7 @@ where
         pos1: 0,
         pos2: 0,
         cap: 0,
-        buf: Box::new(unsafe { MaybeUninit::uninit().assume_init() }),
+        buf: ReadBuf::uninit(&mut [MaybeUninit::<u8>::uninit(); BUFFER_SIZE]),
     }.await
 }
 
@@ -57,21 +57,19 @@ where
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let me = &mut *self;
-
         loop {
             if me.pos1 == me.cap && me.pos2 == me.cap && !me.read_done {
-                let mut buf = ReadBuf::new(&mut me.buf[..]);
-                match ready!(Pin::new(&mut *me.reader).poll_read(cx, &mut buf)) {
+                me.buf.clear();
+                match ready!(Pin::new(&mut *me.reader).poll_read(cx, &mut me.buf)) {
                     Err(e) => return Err(e).into(),
                     Ok(_) => {
-                        let filled = buf.filled();
-                        if filled.len() == 0 {
+                        if me.buf.filled().len() == 0 {
                             me.read_done = true;
                         } else {
-                            me.hasher.update(filled);
+                            me.hasher.update(me.buf.filled());
                             me.pos1 = 0;
                             me.pos2 = 0;
-                            me.cap = filled.len();
+                            me.cap = me.buf.filled().len();
                         }
                     },
                 }
@@ -79,7 +77,7 @@ where
 
             while me.pos1 < me.cap || me.pos2 < me.cap {
                 if me.pos1 < me.cap {
-                    match ready!(Pin::new(&mut *me.writer1).poll_write(cx, &me.buf[me.pos1..me.cap])) {
+                    match ready!(Pin::new(&mut *me.writer1).poll_write(cx, &me.buf.filled()[me.pos1..me.cap])) {
                         Err(e) => return Err(e).into(),
                         Ok(n) => {
                             if n == 0 {
@@ -94,7 +92,7 @@ where
                     }
                 }
                 if me.pos2 < me.cap {
-                    match ready!(Pin::new(&mut *me.writer2).poll_write(cx, &me.buf[me.pos2..me.cap])) {
+                    match ready!(Pin::new(&mut *me.writer2).poll_write(cx, &me.buf.filled()[me.pos2..me.cap])) {
                         Err(e) => return Err(e).into(),
                         Ok(n) => {
                             if n == 0 {
@@ -157,7 +155,7 @@ mod tests {
         let something: String = std::iter::repeat(())
             .map(|()| rng.sample(Alphanumeric))
             .map(char::from)
-            .take(512)
+            .take(3*BUFFER_SIZE/2)
             .collect();
 
         let path_a = dir.path().join("a");
