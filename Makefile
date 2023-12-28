@@ -13,11 +13,12 @@ RUST_BACKTRACE := full
 OPENSSL_VERSION     := 3.2.0
 DOCKER_DIND_VERSION := 24.0.7-alpine3.19
 
-ARTIFACT ?= docker.io/library/ubuntu:22.04
+ARTIFACT1 ?= docker.io/library/ubuntu:22.04
+ARTIFACT2 ?= https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.8.tar.xz
 
 NO_CACHE ?=
 
-_HTTP_PROXY_  := http://10.2.11.1:8000
+_HTTP_PROXY_  := https://proxy.dduct.rs:4430
 _HTTPS_PROXY_ := $(_HTTP_PROXY_)
 
 export
@@ -61,6 +62,7 @@ s static: $(SELF)/Dockerfile $(wildcard $(SELF)/Cargo.*) $(wildcard $(SELF)/src/
 dind:
 	docker run --rm --privileged \
 	--name $(PACKAGE_NAME)-dind \
+	-v /etc/hosts:/etc/hosts \
 	-v $(SELF)/target/debug/certs/ca.crt:/usr/local/share/ca-certificates/ca.crt \
 	-v $(SELF)/target/debug/certs/server.crt:/usr/local/share/ca-certificates/server.crt \
 	-e HTTP_PROXY=$(_HTTP_PROXY_) \
@@ -72,4 +74,29 @@ dind-exec:
 
 dind-pull:
 	docker exec -t $(PACKAGE_NAME)-dind \
-	/bin/sh -ec '(update-ca-certificates ||:); (docker rmi -f $(ARTIFACT) ||:); docker pull $(ARTIFACT)'
+	/bin/sh -ec '(update-ca-certificates ||:); (docker rmi -f $(ARTIFACT1) ||:); docker pull $(ARTIFACT1)'
+
+.PHONY: podman-pull
+
+podman-pull:
+	podman rmi -f $(ARTIFACT1) ||:
+	HTTP_PROXY=$(_HTTP_PROXY_) \
+	HTTPS_PROXY=$(_HTTPS_PROXY_) \
+	podman pull --tls-verify=false \
+	$(ARTIFACT1)
+
+.PHONY: skopeo-pull
+
+skopeo-pull: _TMPDIR := $(shell mktemp -d /tmp/dduct-skopeo-XXXX)
+skopeo-pull:
+	@install -d $$_TMPDIR/ && echo $$_TMPDIR/
+	HTTP_PROXY=$(_HTTP_PROXY_) \
+	HTTPS_PROXY=$(_HTTPS_PROXY_) \
+	skopeo --debug --insecure-policy \
+	copy --src-tls-verify=false \
+	docker://$(ARTIFACT1) dir:$$_TMPDIR/
+
+.PHONY: t-curl test-curl
+
+t-curl test-curl:
+	$(SHELL) $(SELF)/tests/curl.sh $(ARTIFACT2)
