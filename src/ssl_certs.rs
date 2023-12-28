@@ -290,7 +290,10 @@ impl SslCerts {
             ca.push(ca_cert.clone())?;
             let mut p12 = Pkcs12::builder();
             p12.ca(ca);
-            let p12 = p12.build(P12_PASSWORD, P12_NAME, &pkey, &cert)?;
+            p12.name(P12_NAME);
+            p12.pkey(&pkey);
+            p12.cert(&cert);
+            let p12 = p12.build2(P12_PASSWORD)?;
             Ok(p12)
         })
     }
@@ -339,7 +342,10 @@ impl SslCerts {
             ca.push(ca_cert.clone())?;
             let mut p12 = Pkcs12::builder();
             p12.ca(ca);
-            let p12 = p12.build(P12_PASSWORD, P12_NAME, &pkey, &cert)?;
+            p12.name(P12_NAME);
+            p12.pkey(&pkey);
+            p12.cert(&cert);
+            let p12 = p12.build2(P12_PASSWORD)?;
             Ok(p12)
         })
     }
