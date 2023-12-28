@@ -176,11 +176,11 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
     where
         P: AsyncReadExt + AsyncWriteExt + Unpin,
     {
-        log::debug!("proxy_request(): REQ {:?} {:?}", req.uri(), req.headers());
-
         // Make sure server closes the connection.
         req.headers_mut().remove(header::CONNECTION);
         req.headers_mut().insert(header::CONNECTION, "close".parse().unwrap());
+
+        log::debug!("proxy_request(): REQ {:?} {:?}", req.uri(), req.headers());
 
         peer_engine.send_request(req).await?;
 
@@ -191,7 +191,7 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
                     self.send_response(&rsp).await?;
                     peer_engine.copy_to(&mut self.stream).await
                 },
-                StatusCode::MOVED_PERMANENTLY | StatusCode::TEMPORARY_REDIRECT | StatusCode::PERMANENT_REDIRECT => {
+                StatusCode::MOVED_PERMANENTLY | StatusCode::FOUND | StatusCode::TEMPORARY_REDIRECT | StatusCode::PERMANENT_REDIRECT => {
                     let referer = format!("https://{}{}",
                         req.headers().get(header::HOST).unwrap().to_str().unwrap(),
                         req.uri().path(),
