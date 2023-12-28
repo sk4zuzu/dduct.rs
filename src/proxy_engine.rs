@@ -135,7 +135,7 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
     }
 
     async fn tcp_connect(&mut self, req: &mut Request) -> Result<TcpStream> {
-        log::debug!("tcp_connect(): {:?} {:?}", req.uri(), req.headers());
+        log::debug!("tcp_connect(): {:?} {:?} {:?}", req.method(), req.uri(), req.headers());
 
         let host = req.uri().host().unwrap();
         let port = req.uri().port().map(|p| p.as_u16()).or(Some(80)).unwrap();
@@ -146,7 +146,7 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
     }
 
     async fn tls_connect(&mut self, req: &mut Request) -> Result<TlsStream<TcpStream>> {
-        log::debug!("tls_connect(): REQ {:?} {:?}", req.uri(), req.headers());
+        log::debug!("tls_connect(): REQ {:?} {:?} {:?}", req.method(), req.uri(), req.headers());
 
         let uri: Uri = req.headers()
             .get(header::HOST)
@@ -180,7 +180,7 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
         req.headers_mut().remove(header::CONNECTION);
         req.headers_mut().insert(header::CONNECTION, "close".parse().unwrap());
 
-        log::debug!("proxy_request(): REQ {:?} {:?}", req.uri(), req.headers());
+        log::debug!("proxy_request(): REQ {:?} {:?} {:?}", req.method(), req.uri(), req.headers());
 
         peer_engine.send_request(req).await?;
 
@@ -256,7 +256,7 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
     }
 
     async fn handle_connect(&mut self, req: &Request) -> Result<()> {
-        log::debug!("handle_connect(): REQ {:?} {:?}", req.uri(), req.headers());
+        log::debug!("handle_connect(): REQ {:?} {:?} {:?}", req.method(), req.uri(), req.headers());
         let mitm_addr = self.maybe_mitm_addr.unwrap();
         let mut peer_stream = TcpStream::connect(mitm_addr).await?;
         let rsp = http::Response::builder()
@@ -269,12 +269,12 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
     }
 
     async fn handle_head(&mut self, req: &mut Request) -> Result<()> {
-        log::debug!("handle_head(): REQ {:?} {:?}", req.uri(), req.headers());
+        log::debug!("handle_head(): REQ {:?} {:?} {:?}", req.method(), req.uri(), req.headers());
         self.proxy_request(req, false).await
     }
 
     async fn handle_get(&mut self, req: &mut Request) -> Result<()> {
-        log::debug!("handle_get(): REQ {:?} {:?}", req.uri(), req.headers());
+        log::debug!("handle_get(): REQ {:?} {:?} {:?}", req.method(), req.uri(), req.headers());
         match self.file_opener.open_ro(req).await {
             Ok((mut file, length)) => {
                 self.send_file(&mut file, Some(length)).await
@@ -298,7 +298,7 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
     }
 
     async fn handle_any(&mut self, req: &Request) -> Result<()> {
-        log::debug!("handle_any(): REQ {:?} {:?}", req.uri(), req.headers());
+        log::debug!("handle_any(): REQ {:?} {:?} {:?}", req.method(), req.uri(), req.headers());
         self.send_empty_response(StatusCode::NOT_IMPLEMENTED).await
     }
 
