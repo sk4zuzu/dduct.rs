@@ -24,7 +24,7 @@ futures = "*"
 http = "*"
 lazy_static = "*"
 log = "*"
-nix = "*"
+nix = { version = "*", features = ["fs"] }
 openssl = "*"
 regex = "*"
 sha-1 = "*"
