@@ -82,13 +82,14 @@ mod tests {
             .uri("/uri")
             .version(Version::HTTP_11)
             .header(header::HOST, "127.0.0.1:8000")
-            .header(header::ACCEPT, "*/*")
+            .header(header::ACCEPT, "1/2")
+            .header(header::ACCEPT, "3/4")
             .body(Some("body..".into()))
             .unwrap();
 
         assert_eq!(
             HttpRenderer::render_request(&req),
-            b"GET /uri HTTP/1.1\r\nHost: 127.0.0.1:8000\r\nAccept: */*\r\n\r\nbody..",
+            b"GET /uri HTTP/1.1\r\nHost: 127.0.0.1:8000\r\nAccept: 1/2\r\nAccept: 3/4\r\n\r\nbody..",
         )
     }
 

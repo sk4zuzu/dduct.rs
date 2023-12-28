@@ -98,7 +98,7 @@ impl<R> HttpParser<R> where R: AsyncRead + Unpin {
                     parts[1..].join(":"),
                 );
 
-                headers.insert(
+                headers.append(
                     HeaderName::from_bytes(name.as_bytes())
                         .map_err(|_| DductError::BadRequest)?,
                     HeaderValue::from_bytes(value.as_bytes())
@@ -217,7 +217,8 @@ mod tests {
             /* 15 */ io::Result::Ok(&b"path HTTP/2.0\r\n"[..]),
             /*  6 */ io::Result::Ok(&b"Host: "[..]),
             /* 16 */ io::Result::Ok(&b"127.0.0.1:8000\r\n"[..]),
-            /* 13 */ io::Result::Ok(&b"Accept: */*\r\n"[..]),
+            /* 13 */ io::Result::Ok(&b"Accept: 1/2\r\n"[..]),
+            /* 13 */ io::Result::Ok(&b"Accept: 3/4\r\n"[..]),
             /*  8 */ io::Result::Ok(&b"\r\nbody.."[..]),
         ]);
 
@@ -232,7 +233,10 @@ mod tests {
         assert_eq!(req.version(), Version::HTTP_2);
 
         assert_eq!(req.headers()[header::HOST], "127.0.0.1:8000");
-        assert_eq!(req.headers()[header::ACCEPT], "*/*");
+
+        let mut iter = req.headers().get_all(header::ACCEPT).iter();
+        assert_eq!("1/2", iter.next().unwrap());
+        assert_eq!("3/4", iter.next().unwrap());
 
         assert_eq!(*req.body(), Some("body..".into()));
 
@@ -249,7 +253,8 @@ mod tests {
             /* 15 */ io::Result::Ok(&b"TP/2.0 200 OK\r\n"[..]),
             /*  6 */ io::Result::Ok(&b"Host: "[..]),
             /* 16 */ io::Result::Ok(&b"127.0.0.1:8000\r\n"[..]),
-            /* 13 */ io::Result::Ok(&b"Accept: */*\r\n"[..]),
+            /* 13 */ io::Result::Ok(&b"Accept: 1/2\r\n"[..]),
+            /* 13 */ io::Result::Ok(&b"Accept: 3/4\r\n"[..]),
             /*  8 */ io::Result::Ok(&b"\r\nbody.."[..]),
         ]);
 
@@ -263,7 +268,10 @@ mod tests {
         assert_eq!(req.status(), StatusCode::OK);
 
         assert_eq!(req.headers()[header::HOST], "127.0.0.1:8000");
-        assert_eq!(req.headers()[header::ACCEPT], "*/*");
+
+        let mut iter = req.headers().get_all(header::ACCEPT).iter();
+        assert_eq!("1/2", iter.next().unwrap());
+        assert_eq!("3/4", iter.next().unwrap());
 
         assert_eq!(*req.body(), Some("body..".into()));
 
