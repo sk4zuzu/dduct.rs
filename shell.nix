@@ -4,10 +4,10 @@ with pkgs;
 
 stdenv.mkDerivation {
   name = "dduct-env";
-  buildInputs = [
+  nativeBuildInputs = [
     clang
     openssl
-    pkgconfig
+    pkg-config
     skopeo
   ];
 }
