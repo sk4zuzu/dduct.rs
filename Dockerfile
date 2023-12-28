@@ -17,7 +17,7 @@ WORKDIR /build/openssl/
 
 ARG OPENSSL_VERSION
 
-RUN curl -fsSL https://github.com/openssl/openssl/archive/OpenSSL_$OPENSSL_VERSION.tar.gz \
+RUN curl -fsSL https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz \
   | tar -xz -f- --strip-components=1 -C ./ \
  && CC="musl-gcc -fPIE -pie" ./Configure no-shared no-async --prefix=/musl --openssldir=/musl/ssl linux-x86_64 \
  && make depend \
@@ -56,7 +56,7 @@ RUN cargo build \
     --release \
  && strip --strip-unneeded ./target/x86_64-unknown-linux-musl/release/$PACKAGE_BIN
 
-FROM docker.io/library/alpine:3.15 AS SERVE
+FROM docker.io/library/alpine:3.19 AS SERVE
 
 ARG PACKAGE_BIN
 

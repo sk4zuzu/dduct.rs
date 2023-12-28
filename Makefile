@@ -10,7 +10,10 @@ PACKAGE_BIN  := $(PACKAGE_NAME)
 RUST_LOG       := debug
 RUST_BACKTRACE := full
 
-OPENSSL_VERSION := 1_1_1m
+OPENSSL_VERSION     := 3.2.0
+DOCKER_DIND_VERSION := 24.0.7-alpine3.19
+
+ARTIFACT ?= docker.io/library/ubuntu:22.04
 
 NO_CACHE ?=
 
@@ -62,11 +65,11 @@ dind:
 	-v $(SELF)/target/debug/certs/server.crt:/usr/local/share/ca-certificates/server.crt \
 	-e HTTP_PROXY=$(_HTTP_PROXY_) \
 	-e HTTPS_PROXY=$(_HTTPS_PROXY_) \
-	docker.io/library/docker:20.10.16-dind-alpine3.15
+	docker.io/library/docker:$(DOCKER_DIND_VERSION)
 
 dind-exec:
 	docker exec -it $(PACKAGE_NAME)-dind /bin/sh
 
 dind-pull:
 	docker exec -t $(PACKAGE_NAME)-dind \
-	/bin/sh -ec '(update-ca-certificates ||:); (docker rmi alpine:latest ||:); docker pull alpine:latest'
+	/bin/sh -ec '(update-ca-certificates ||:); (docker rmi -f $(ARTIFACT) ||:); docker pull $(ARTIFACT)'
