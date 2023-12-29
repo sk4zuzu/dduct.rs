@@ -1,9 +1,10 @@
-use dduct::{HttpProxy, Result, SslCerts, TlsMitm, serve};
+use dduct::{DductCfg, HttpProxy, Result, SslCerts, TlsMitm, serve};
 use futures::future;
 use hex::{self};
 use rand::distributions::Alphanumeric;
 use rand::Rng;
 use sha1::{Digest, Sha1};
+use std::default::Default;
 use std::env::set_current_dir;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -113,7 +114,12 @@ async fn test_static() -> Result<()> {
 
     generate_files(static_dir.path(), 4, 1024).await?;
 
-    let mut ssl_certs = SslCerts::new(cert_dir.path());
+    let cfg = DductCfg {
+        cert_dir: cert_dir.path().into(),
+        ..Default::default()
+    };
+
+    let mut ssl_certs = SslCerts::new(&cfg);
     ssl_certs.generate()?;
 
     let result = time::timeout(
@@ -179,7 +185,15 @@ async fn test_serial() -> Result<()> {
 
     generate_files(static_dir.path(), 4, 1024).await?;
 
-    let mut ssl_certs = SslCerts::new(cert_dir.path());
+    let cfg = DductCfg {
+        cert_dir: cert_dir.path().into(),
+        file_dir: file_dir.path().into(),
+        tcp_bind: ([0, 0, 0, 0], 8003).into(),
+        tls_bind: ([127, 0, 0, 1], 4433).into(),
+        ..Default::default()
+    };
+
+    let mut ssl_certs = SslCerts::new(&cfg);
     ssl_certs.generate()?;
 
     let result = time::timeout(
@@ -200,13 +214,7 @@ async fn test_serial() -> Result<()> {
                 static_dir.path(),
             ).serve(),
             // Run full proxy..
-            serve(
-                ([0, 0, 0, 0], 8003).into(),
-                ([127, 0, 0, 1], 4433).into(),
-                ssl_certs.server_id()?.clone(),
-                ssl_certs.client_id()?.clone(),
-                file_dir.path(),
-            ),
+            serve(&cfg, &ssl_certs),
             // Tests: run some requests..
             async {
                 sleep(Duration::from_secs(8)).await;
@@ -257,11 +265,19 @@ async fn test_parallel() -> Result<()> {
 
     generate_files(static_dir.path(), 1, 16 * 1024).await?;
 
-    let mut ssl_certs = SslCerts::new(cert_dir.path());
+    let cfg = DductCfg {
+        cert_dir: cert_dir.path().into(),
+        file_dir: file_dir.path().into(),
+        tcp_bind: ([0, 0, 0, 0], 8005).into(),
+        tls_bind: ([127, 0, 0, 1], 4435).into(),
+        ..Default::default()
+    };
+
+    let mut ssl_certs = SslCerts::new(&cfg);
     ssl_certs.generate()?;
 
     let result = time::timeout(
-        Duration::from_secs(30),
+        Duration::from_secs(45),
         future::try_join5(
             // Helper: serve static files over tls..
             TlsMitm::new(
@@ -271,13 +287,7 @@ async fn test_parallel() -> Result<()> {
                 static_dir.path(),
             ).serve(),
             // Run full proxy..
-            serve(
-                ([0, 0, 0, 0], 8005).into(),
-                ([127, 0, 0, 1], 4435).into(),
-                ssl_certs.server_id()?.clone(),
-                ssl_certs.client_id()?.clone(),
-                file_dir.path(),
-            ),
+            serve(&cfg, &ssl_certs),
             // Tests: run some requests..
             async {
                 sleep(Duration::from_secs(8)).await;

@@ -15,6 +15,9 @@ pub enum DductError {
     Redirected,
 
     #[error(transparent)]
+    Toml(#[from] toml::de::Error),
+
+    #[error(transparent)]
     Errno(#[from] nix::errno::Errno),
 
     #[error(transparent)]

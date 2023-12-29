@@ -1,4 +1,4 @@
-use crate::Result;
+use crate::{DductCfg, Result};
 use openssl::asn1::{Asn1Time, Asn1Integer};
 use openssl::bn::{BigNum, MsbOption};
 use openssl::hash::MessageDigest;
@@ -12,29 +12,18 @@ use openssl::x509::extension::{AuthorityKeyIdentifier, SubjectKeyIdentifier};
 use openssl::x509::extension::{BasicConstraints, ExtendedKeyUsage, KeyUsage, SubjectAlternativeName};
 use std::default::Default;
 use std::fs::{self};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tokio_native_tls::native_tls::Identity;
 
-const RSA_KEY_BITS: u32 = 4096;
-const DAYS_FROM_NOW: u32 = 4096;
 const CERTIFICATE_VERSION: i32 = 2;
 
-const CA_CN: &str = "dduct";
-const SERVER_CN: &str = "*.dduct.lh";
-const CLIENT_CN: &str = "*.dduct.lh";
-
-const SERVER_DNS_SANS: &'static [&'static str] = &["*.dduct.rs", "*.docker.io"];
-const SERVER_IP_SANS: &'static [&'static str] = &["127.0.0.1"];
-
-const P12_PASSWORD: &str = "dduct";
 const P12_NAME: &str = "dduct";
-
 const SERVER_P12: &str = "server.p12";
 const CLIENT_P12: &str = "client.p12";
 
 #[derive(Default)]
 pub struct SslCerts {
-    cert_dir: PathBuf,
+    cfg: DductCfg,
 
     ca_pkey: Option<PKey<Private>>,
     ca_cert: Option<X509>,
@@ -49,15 +38,15 @@ pub struct SslCerts {
 }
 
 impl SslCerts {
-    pub fn new(cert_dir: &Path) -> Self {
-        let cert_dir = cert_dir.to_path_buf();
-        Self { cert_dir, ..Default::default() }
+    pub fn new(cfg: &DductCfg) -> Self {
+        let cfg = cfg.clone();
+        Self { cfg, ..Default::default() }
     }
 
     pub fn server_id(&self) -> Result<Identity> {
         let id = Identity::from_pkcs12(
             self.server_p12.as_ref().unwrap().to_der()?.as_slice(),
-            P12_PASSWORD,
+            self.cfg.p12_pass.as_str(),
         )?;
         Ok(id)
     }
@@ -65,7 +54,7 @@ impl SslCerts {
     pub fn client_id(&self) -> Result<Identity> {
         let id = Identity::from_pkcs12(
             self.client_p12.as_ref().unwrap().to_der()?.as_slice(),
-            P12_PASSWORD,
+            self.cfg.p12_pass.as_str(),
         )?;
         Ok(id)
     }
@@ -154,9 +143,10 @@ impl SslCerts {
     }
 
     fn ensure_ca_pkey(&mut self) -> Result<()> {
-        let path = self.cert_dir.join("ca.key");
+        let path = self.cfg.cert_dir.join("ca.key");
+        let rsa_key_bits = self.cfg.rsa_key_bits;
         Self::ensure_pkey(&mut self.ca_pkey, &path, || {
-            Ok(PKey::from_rsa(Rsa::generate(RSA_KEY_BITS)?)?)
+            Ok(PKey::from_rsa(Rsa::generate(rsa_key_bits)?)?)
         })
     }
 
@@ -183,14 +173,16 @@ impl SslCerts {
     }
 
     fn ensure_ca_cert(&mut self) -> Result<()> {
-        let path = self.cert_dir.join("ca.crt");
-        let pkey = self.ca_pkey.as_ref().unwrap().clone();
+        let days_from_now = self.cfg.days_from_now;
+        let ca_cn = self.cfg.ca_cn.clone();
+        let path = self.cfg.cert_dir.join("ca.crt");
+        let pkey = self.ca_pkey.clone().unwrap();
         Self::ensure_cert(&mut self.ca_cert, &path, || {
             let not_before = Asn1Time::days_from_now(0)?;
-            let not_after = Asn1Time::days_from_now(DAYS_FROM_NOW)?;
+            let not_after = Asn1Time::days_from_now(days_from_now)?;
 
             let mut subject_name = X509Name::builder()?;
-            subject_name.append_entry_by_nid(Nid::COMMONNAME, CA_CN)?;
+            subject_name.append_entry_by_nid(Nid::COMMONNAME, ca_cn.as_str())?;
             let subject_name = subject_name.build();
 
             let mut cert = X509::builder()?;
@@ -209,13 +201,19 @@ impl SslCerts {
     }
 
     fn ensure_server_pkey(&mut self) -> Result<()> {
-        let path = self.cert_dir.join("server.key");
+        let rsa_key_bits = self.cfg.rsa_key_bits;
+        let path = self.cfg.cert_dir.join("server.key");
         Self::ensure_pkey(&mut self.server_pkey, &path, || {
-            Ok(PKey::from_rsa(Rsa::generate(RSA_KEY_BITS)?)?)
+            Ok(PKey::from_rsa(Rsa::generate(rsa_key_bits)?)?)
         })
     }
 
-    fn append_server_extensions(builder: &mut X509Builder, issuer: &X509) -> Result<()> {
+    fn append_server_extensions(
+        builder: &mut X509Builder,
+        issuer: &X509,
+        maybe_dns_sans: Option<Vec<String>>,
+        maybe_ip_sans: Option<Vec<String>>,
+    ) -> Result<()> {
         let context = builder.x509v3_context(Some(issuer), None);
         let ext = AuthorityKeyIdentifier::new()
             .keyid(true)
@@ -247,8 +245,12 @@ impl SslCerts {
 
         let context = builder.x509v3_context(Some(issuer), None);
         let mut sans = SubjectAlternativeName::new();
-        for san in SERVER_DNS_SANS { sans.dns(san); }
-        for san in SERVER_IP_SANS { sans.ip(san); }
+        if let Some(dns_sans) = maybe_dns_sans {
+            for san in dns_sans { sans.dns(san.as_str()); }
+        }
+        if let Some(ip_sans) = maybe_ip_sans {
+            for san in ip_sans { sans.ip(san.as_str()); }
+        }
         let ext = sans.build(&context)?;
         builder.append_extension(ext)?;
 
@@ -256,16 +258,20 @@ impl SslCerts {
     }
 
     fn ensure_server_cert(&mut self) -> Result<()> {
-        let path = self.cert_dir.join("server.crt");
-        let pkey = self.server_pkey.as_ref().unwrap().clone();
-        let ca_cert = self.ca_cert.as_ref().unwrap().clone();
-        let ca_pkey = self.ca_pkey.as_ref().unwrap().clone();
+        let days_from_now = self.cfg.days_from_now;
+        let server_cn = self.cfg.server_cn.clone();
+        let server_dns_sans = self.cfg.server_dns_sans.to_vec();
+        let server_ip_sans = self.cfg.server_ip_sans.to_vec();
+        let path = self.cfg.cert_dir.join("server.crt");
+        let pkey = self.server_pkey.clone().unwrap();
+        let ca_cert = self.ca_cert.clone().unwrap();
+        let ca_pkey = self.ca_pkey.clone().unwrap();
         Self::ensure_cert(&mut self.server_cert, &path, || {
             let not_before = Asn1Time::days_from_now(0)?;
-            let not_after = Asn1Time::days_from_now(DAYS_FROM_NOW)?;
+            let not_after = Asn1Time::days_from_now(days_from_now)?;
 
             let mut subject_name = X509Name::builder()?;
-            subject_name.append_entry_by_nid(Nid::COMMONNAME, SERVER_CN)?;
+            subject_name.append_entry_by_nid(Nid::COMMONNAME, server_cn.as_str())?;
             let subject_name = subject_name.build();
 
             let mut cert = X509::builder()?;
@@ -275,7 +281,8 @@ impl SslCerts {
             cert.set_not_before(&not_before)?;
             cert.set_not_after(&not_after)?;
             cert.set_subject_name(&subject_name)?;
-            Self::append_server_extensions(&mut cert, &ca_cert)?;
+            Self::append_server_extensions(&mut cert, &ca_cert, Some(server_dns_sans.clone()),
+                                                                Some(server_ip_sans.clone()))?;
             cert.sign(&ca_pkey, MessageDigest::sha256())?;
             let cert = cert.build();
             Ok(cert)
@@ -283,10 +290,11 @@ impl SslCerts {
     }
 
     fn ensure_server_p12(&mut self) -> Result<()> {
-        let path = self.cert_dir.join(SERVER_P12);
-        let pkey = self.server_pkey.as_ref().unwrap().clone();
-        let cert = self.server_cert.as_ref().unwrap().clone();
-        let ca_cert = self.ca_cert.as_ref().unwrap().clone();
+        let p12_pass = self.cfg.p12_pass.clone();
+        let path = self.cfg.cert_dir.join(SERVER_P12);
+        let pkey = self.server_pkey.clone().unwrap();
+        let cert = self.server_cert.clone().unwrap();
+        let ca_cert = self.ca_cert.clone().unwrap();
         Self::ensure_p12(&mut self.server_p12, &path, || {
             let mut ca = Stack::new()?;
             ca.push(ca_cert.clone())?;
@@ -295,29 +303,32 @@ impl SslCerts {
             p12.name(P12_NAME);
             p12.pkey(&pkey);
             p12.cert(&cert);
-            let p12 = p12.build2(P12_PASSWORD)?;
+            let p12 = p12.build2(p12_pass.as_str())?;
             Ok(p12)
         })
     }
 
     fn ensure_client_pkey(&mut self) -> Result<()> {
-        let path = self.cert_dir.join("client.key");
+        let rsa_key_bits = self.cfg.rsa_key_bits;
+        let path = self.cfg.cert_dir.join("client.key");
         Self::ensure_pkey(&mut self.client_pkey, &path, || {
-            Ok(PKey::from_rsa(Rsa::generate(RSA_KEY_BITS)?)?)
+            Ok(PKey::from_rsa(Rsa::generate(rsa_key_bits)?)?)
         })
     }
 
     fn ensure_client_cert(&mut self) -> Result<()> {
-        let path = self.cert_dir.join("client.crt");
-        let pkey = self.client_pkey.as_ref().unwrap().clone();
-        let ca_cert = self.ca_cert.as_ref().unwrap().clone();
-        let ca_pkey = self.ca_pkey.as_ref().unwrap().clone();
+        let days_from_now = self.cfg.days_from_now;
+        let client_cn = self.cfg.client_cn.clone();
+        let path = self.cfg.cert_dir.join("client.crt");
+        let pkey = self.client_pkey.clone().unwrap();
+        let ca_cert = self.ca_cert.clone().unwrap();
+        let ca_pkey = self.ca_pkey.clone().unwrap();
         Self::ensure_cert(&mut self.client_cert, &path, || {
             let not_before = Asn1Time::days_from_now(0)?;
-            let not_after = Asn1Time::days_from_now(DAYS_FROM_NOW)?;
+            let not_after = Asn1Time::days_from_now(days_from_now)?;
 
             let mut subject_name = X509Name::builder()?;
-            subject_name.append_entry_by_nid(Nid::COMMONNAME, CLIENT_CN)?;
+            subject_name.append_entry_by_nid(Nid::COMMONNAME, client_cn.as_str())?;
             let subject_name = subject_name.build();
 
             let mut cert = X509::builder()?;
@@ -327,7 +338,8 @@ impl SslCerts {
             cert.set_not_before(&not_before)?;
             cert.set_not_after(&not_after)?;
             cert.set_subject_name(&subject_name)?;
-            Self::append_server_extensions(&mut cert, &ca_cert)?;
+            Self::append_server_extensions(&mut cert, &ca_cert, None,
+                                                                None)?;
             cert.sign(&ca_pkey, MessageDigest::sha256())?;
             let cert = cert.build();
             Ok(cert)
@@ -335,10 +347,11 @@ impl SslCerts {
     }
 
     fn ensure_client_p12(&mut self) -> Result<()> {
-        let path = self.cert_dir.join(CLIENT_P12);
-        let pkey = self.client_pkey.as_ref().unwrap().clone();
-        let cert = self.client_cert.as_ref().unwrap().clone();
-        let ca_cert = self.ca_cert.as_ref().unwrap().clone();
+        let p12_pass = self.cfg.p12_pass.clone();
+        let path = self.cfg.cert_dir.join(CLIENT_P12);
+        let pkey = self.client_pkey.clone().unwrap();
+        let cert = self.client_cert.clone().unwrap();
+        let ca_cert = self.ca_cert.clone().unwrap();
         Self::ensure_p12(&mut self.client_p12, &path, || {
             let mut ca = Stack::new()?;
             ca.push(ca_cert.clone())?;
@@ -347,7 +360,7 @@ impl SslCerts {
             p12.name(P12_NAME);
             p12.pkey(&pkey);
             p12.cert(&cert);
-            let p12 = p12.build2(P12_PASSWORD)?;
+            let p12 = p12.build2(p12_pass.as_str())?;
             Ok(p12)
         })
     }
@@ -382,13 +395,14 @@ mod tests {
         setup();
 
         let dir = tempdir::TempDir::new("dduct")?;
+        let cfg = DductCfg { cert_dir: dir.path().into(), ..Default::default() };
 
-        let mut ssl_certs = SslCerts::new(dir.path());
+        let mut ssl_certs = SslCerts::new(&cfg);
         ssl_certs.generate()?;
         ssl_certs.server_id()?;
         ssl_certs.client_id()?;
 
-        let mut ssl_certs = SslCerts::new(dir.path());
+        let mut ssl_certs = SslCerts::new(&cfg);
         ssl_certs.generate()?;
         ssl_certs.server_id()?;
         ssl_certs.client_id()?;

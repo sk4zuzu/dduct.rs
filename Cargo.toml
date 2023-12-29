@@ -14,11 +14,13 @@ path = "./src/bin.rs"
 
 [dev-dependencies]
 hex = "*"
+indoc = "*"
 rand = "*"
 tempdir = "*"
 
 [dependencies]
 anyhow = "*"
+clap = { version = "*", features = ["derive"] }
 env_logger = "*"
 futures = "*"
 http = "*"
@@ -27,9 +29,11 @@ log = "*"
 nix = { version = "*", features = ["fs"] }
 openssl = "*"
 regex = "*"
+serde = { version = "*", features = ["derive"] }
 sha-1 = "*"
 thiserror = "*"
 tokio = { version = "*", features = ["full"] }
 tokio-native-tls = "*"
 tokio-stream = "*"
 tokio-util = { version = "*", features = ["full"] }
+toml = "*"

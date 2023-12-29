@@ -1,30 +1,23 @@
-use crate::{HttpProxy, Result, TlsMitm};
+use crate::{DductCfg, HttpProxy, Result, SslCerts, TlsMitm};
 use futures::future::{self};
-use std::net::SocketAddr;
-use std::path::Path;
-use tokio_native_tls::native_tls::Identity;
 
-pub async fn serve(
-    tcp_bind_addr: SocketAddr,
-    tls_bind_addr: SocketAddr,
-    server_id: Identity,
-    client_id: Identity,
-    file_dir: &Path,
-) -> Result<()> {
-    log::info!("Files {:?}", file_dir);
+pub async fn serve(cfg: &DductCfg, ssl_certs: &SslCerts) -> Result<()> {
+    log::info!("Files {:?}", cfg.file_dir.as_path());
+
     future::try_join(
         HttpProxy::new(
-            tcp_bind_addr,
-            tls_bind_addr,
-            client_id.clone(),
-            file_dir,
+            cfg.tcp_bind,
+            cfg.tls_bind,
+            ssl_certs.client_id()?.clone(),
+            cfg.file_dir.as_path(),
         ).serve(),
         TlsMitm::new(
-            tls_bind_addr,
-            server_id,
-            client_id.clone(),
-            file_dir,
+            cfg.tls_bind,
+            ssl_certs.server_id()?.clone(),
+            ssl_certs.client_id()?.clone(),
+            cfg.file_dir.as_path(),
         ).serve(),
     ).await?;
+
     Ok(())
 }

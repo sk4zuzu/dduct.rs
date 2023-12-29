@@ -1,42 +1,29 @@
-use dduct::{Result, SslCerts, serve};
-use std::env::current_exe;
+use dduct::{DductCfg, Result, SslCerts, parse_args, parse_cfg, serve};
 use std::fs::create_dir_all;
-use std::path::PathBuf;
 
-fn ensure_dirs() -> Result<(PathBuf, PathBuf)> {
-    let parent_dir = current_exe()?
-        .parent()
-        .unwrap()
-        .to_path_buf();
-
-    let file_dir = parent_dir.join("files");
-    if !file_dir.exists() {
-        create_dir_all(file_dir.as_path())?;
+fn ensure_dirs(cfg: &DductCfg) -> Result<()> {
+    if !cfg.cert_dir.exists() {
+        create_dir_all(cfg.cert_dir.as_path())?;
     }
-
-    let cert_dir = parent_dir.join("certs");
-    if !cert_dir.exists() {
-        create_dir_all(cert_dir.as_path())?;
+    if !cfg.file_dir.exists() {
+        create_dir_all(cfg.file_dir.as_path())?;
     }
-
-    Ok((file_dir, cert_dir))
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let args = parse_args()?;
+
+    let cfg = parse_cfg(&args)?;
+
     env_logger::init_from_env(
-        env_logger::Env::default().filter_or(env_logger::DEFAULT_FILTER_ENV, "info"));
+        env_logger::Env::default().filter_or(env_logger::DEFAULT_FILTER_ENV, cfg.log_level.clone()));
 
-    let (file_dir, cert_dir) = ensure_dirs()?;
+    ensure_dirs(&cfg)?;
 
-    let mut ssl_certs = SslCerts::new(cert_dir.as_path());
+    let mut ssl_certs = SslCerts::new(&cfg);
     ssl_certs.generate()?;
 
-    serve(
-        ([0, 0, 0, 0], 8000).into(),
-        ([0, 0, 0, 0], 4430).into(),
-        ssl_certs.server_id()?,
-        ssl_certs.client_id()?,
-        file_dir.as_path(),
-    ).await
+    serve(&cfg, &ssl_certs).await
 }
