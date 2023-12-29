@@ -117,7 +117,7 @@ where
                     Err(e) => return Err(e).into(),
                     Ok(_) => (),
                 }
-                return Ok(me.hasher.clone()).into();
+                return Ok(me.hasher.to_owned()).into();
             }
         }
     }

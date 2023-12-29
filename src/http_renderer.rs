@@ -1,5 +1,4 @@
 use crate::Result;
-
 use http::header::{HeaderMap, HeaderValue};
 use std::io::Write;
 

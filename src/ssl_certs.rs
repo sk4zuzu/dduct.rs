@@ -39,7 +39,7 @@ pub struct SslCerts {
 
 impl SslCerts {
     pub fn new(cfg: &DductCfg) -> Self {
-        let cfg = cfg.clone();
+        let cfg = cfg.to_owned();
         Self { cfg, ..Default::default() }
     }
 
@@ -174,9 +174,9 @@ impl SslCerts {
 
     fn ensure_ca_cert(&mut self) -> Result<()> {
         let days_from_now = self.cfg.days_from_now;
-        let ca_cn = self.cfg.ca_cn.clone();
+        let ca_cn = self.cfg.ca_cn.to_owned();
         let path = self.cfg.cert_dir.join("ca.crt");
-        let pkey = self.ca_pkey.clone().unwrap();
+        let pkey = self.ca_pkey.to_owned().unwrap();
         Self::ensure_cert(&mut self.ca_cert, &path, || {
             let not_before = Asn1Time::days_from_now(0)?;
             let not_after = Asn1Time::days_from_now(days_from_now)?;
@@ -259,13 +259,13 @@ impl SslCerts {
 
     fn ensure_server_cert(&mut self) -> Result<()> {
         let days_from_now = self.cfg.days_from_now;
-        let server_cn = self.cfg.server_cn.clone();
+        let server_cn = self.cfg.server_cn.to_owned();
         let server_dns_sans = self.cfg.server_dns_sans.to_vec();
         let server_ip_sans = self.cfg.server_ip_sans.to_vec();
         let path = self.cfg.cert_dir.join("server.crt");
-        let pkey = self.server_pkey.clone().unwrap();
-        let ca_cert = self.ca_cert.clone().unwrap();
-        let ca_pkey = self.ca_pkey.clone().unwrap();
+        let pkey = self.server_pkey.to_owned().unwrap();
+        let ca_cert = self.ca_cert.to_owned().unwrap();
+        let ca_pkey = self.ca_pkey.to_owned().unwrap();
         Self::ensure_cert(&mut self.server_cert, &path, || {
             let not_before = Asn1Time::days_from_now(0)?;
             let not_after = Asn1Time::days_from_now(days_from_now)?;
@@ -281,8 +281,8 @@ impl SslCerts {
             cert.set_not_before(&not_before)?;
             cert.set_not_after(&not_after)?;
             cert.set_subject_name(&subject_name)?;
-            Self::append_server_extensions(&mut cert, &ca_cert, Some(server_dns_sans.clone()),
-                                                                Some(server_ip_sans.clone()))?;
+            Self::append_server_extensions(&mut cert, &ca_cert, Some(server_dns_sans.to_owned()),
+                                                                Some(server_ip_sans.to_owned()))?;
             cert.sign(&ca_pkey, MessageDigest::sha256())?;
             let cert = cert.build();
             Ok(cert)
@@ -290,14 +290,14 @@ impl SslCerts {
     }
 
     fn ensure_server_p12(&mut self) -> Result<()> {
-        let p12_pass = self.cfg.p12_pass.clone();
+        let p12_pass = self.cfg.p12_pass.to_owned();
         let path = self.cfg.cert_dir.join(SERVER_P12);
-        let pkey = self.server_pkey.clone().unwrap();
-        let cert = self.server_cert.clone().unwrap();
-        let ca_cert = self.ca_cert.clone().unwrap();
+        let pkey = self.server_pkey.to_owned().unwrap();
+        let cert = self.server_cert.to_owned().unwrap();
+        let ca_cert = self.ca_cert.to_owned().unwrap();
         Self::ensure_p12(&mut self.server_p12, &path, || {
             let mut ca = Stack::new()?;
-            ca.push(ca_cert.clone())?;
+            ca.push(ca_cert.to_owned())?;
             let mut p12 = Pkcs12::builder();
             p12.ca(ca);
             p12.name(P12_NAME);
@@ -318,11 +318,11 @@ impl SslCerts {
 
     fn ensure_client_cert(&mut self) -> Result<()> {
         let days_from_now = self.cfg.days_from_now;
-        let client_cn = self.cfg.client_cn.clone();
+        let client_cn = self.cfg.client_cn.to_owned();
         let path = self.cfg.cert_dir.join("client.crt");
-        let pkey = self.client_pkey.clone().unwrap();
-        let ca_cert = self.ca_cert.clone().unwrap();
-        let ca_pkey = self.ca_pkey.clone().unwrap();
+        let pkey = self.client_pkey.to_owned().unwrap();
+        let ca_cert = self.ca_cert.to_owned().unwrap();
+        let ca_pkey = self.ca_pkey.to_owned().unwrap();
         Self::ensure_cert(&mut self.client_cert, &path, || {
             let not_before = Asn1Time::days_from_now(0)?;
             let not_after = Asn1Time::days_from_now(days_from_now)?;
@@ -347,14 +347,14 @@ impl SslCerts {
     }
 
     fn ensure_client_p12(&mut self) -> Result<()> {
-        let p12_pass = self.cfg.p12_pass.clone();
+        let p12_pass = self.cfg.p12_pass.to_owned();
         let path = self.cfg.cert_dir.join(CLIENT_P12);
-        let pkey = self.client_pkey.clone().unwrap();
-        let cert = self.client_cert.clone().unwrap();
-        let ca_cert = self.ca_cert.clone().unwrap();
+        let pkey = self.client_pkey.to_owned().unwrap();
+        let cert = self.client_cert.to_owned().unwrap();
+        let ca_cert = self.ca_cert.to_owned().unwrap();
         Self::ensure_p12(&mut self.client_p12, &path, || {
             let mut ca = Stack::new()?;
-            ca.push(ca_cert.clone())?;
+            ca.push(ca_cert.to_owned())?;
             let mut p12 = Pkcs12::builder();
             p12.ca(ca);
             p12.name(P12_NAME);

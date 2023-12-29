@@ -18,7 +18,7 @@ impl HttpProxy {
         client_id: Identity,
         file_dir: &Path,
     ) -> Self {
-        let file_dir = file_dir.to_path_buf();
+        let file_dir = file_dir.into();
         Self { bind_addr, conn_addr, client_id, file_dir }
     }
 
@@ -30,9 +30,9 @@ impl HttpProxy {
             let (stream, addr) = listener.accept().await?;
             log::debug!("Accepted {:?}", addr);
 
-            let conn_addr = self.conn_addr.clone();
-            let client_id = self.client_id.clone();
-            let file_dir = self.file_dir.clone();
+            let conn_addr = self.conn_addr.to_owned();
+            let client_id = self.client_id.to_owned();
+            let file_dir = self.file_dir.to_owned();
 
             tokio::spawn(async move {
                 ProxyEngine::new(stream, Some(conn_addr), Some(client_id), file_dir).run().await

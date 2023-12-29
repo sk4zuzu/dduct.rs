@@ -129,14 +129,14 @@ async fn test_static() -> Result<()> {
             HttpProxy::new(
                 ([0, 0, 0, 0], 8001).into(),
                 ([127, 0, 0, 1], 4431).into(),
-                ssl_certs.client_id()?.clone(),
+                ssl_certs.client_id()?.to_owned(),
                 static_dir.path(),
             ).serve(),
             // Helper: serve static files over tls..
             TlsMitm::new(
                 ([0, 0, 0, 0], 4432).into(),
-                ssl_certs.server_id()?.clone(),
-                ssl_certs.client_id()?.clone(),
+                ssl_certs.server_id()?.to_owned(),
+                ssl_certs.client_id()?.to_owned(),
                 static_dir.path(),
             ).serve(),
             // Tests: run some requests..
@@ -203,14 +203,14 @@ async fn test_serial() -> Result<()> {
             HttpProxy::new(
                 ([0, 0, 0, 0], 8001).into(),
                 ([127, 0, 0, 1], 4431).into(),
-                ssl_certs.client_id()?.clone(),
+                ssl_certs.client_id()?.to_owned(),
                 static_dir.path(),
             ).serve(),
             // Helper: serve static files over tls..
             TlsMitm::new(
                 ([0, 0, 0, 0], 4432).into(),
-                ssl_certs.server_id()?.clone(),
-                ssl_certs.client_id()?.clone(),
+                ssl_certs.server_id()?.to_owned(),
+                ssl_certs.client_id()?.to_owned(),
                 static_dir.path(),
             ).serve(),
             // Run full proxy..
@@ -282,8 +282,8 @@ async fn test_parallel() -> Result<()> {
             // Helper: serve static files over tls..
             TlsMitm::new(
                 ([0, 0, 0, 0], 4434).into(),
-                ssl_certs.server_id()?.clone(),
-                ssl_certs.client_id()?.clone(),
+                ssl_certs.server_id()?.to_owned(),
+                ssl_certs.client_id()?.to_owned(),
                 static_dir.path(),
             ).serve(),
             // Run full proxy..

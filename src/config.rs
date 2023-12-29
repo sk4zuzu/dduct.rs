@@ -38,7 +38,7 @@ pub fn parse_args() -> Result<DductArgs> {
     let mut args = DductArgs { ..Default::default() };
 
     macro_rules! resolve {
-        ($dst:ident, $src:ident) => { args.$dst = parsed.$src.clone().map_or(args.$dst, identity) };
+        ($dst:ident, $src:ident) => { args.$dst = parsed.$src.to_owned().map_or(args.$dst, identity) };
     }
 
     resolve!(cfg_path, cfg);
@@ -144,7 +144,7 @@ pub fn parse_cfg(args: &DductArgs) -> Result<DductCfg> {
     let mut cfg = DductCfg { ..Default::default() };
 
     macro_rules! resolve {
-        ($sub:ident, $dst:ident, $src:ident) => { cfg.$dst = $sub.$src.clone().map_or(cfg.$dst, identity) };
+        ($sub:ident, $dst:ident, $src:ident) => { cfg.$dst = $sub.$src.to_owned().map_or(cfg.$dst, identity) };
     }
 
     let misc = parsed.misc.as_ref().unwrap();

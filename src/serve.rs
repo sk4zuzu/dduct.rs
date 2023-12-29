@@ -8,13 +8,13 @@ pub async fn serve(cfg: &DductCfg, ssl_certs: &SslCerts) -> Result<()> {
         HttpProxy::new(
             cfg.tcp_bind,
             cfg.tls_bind,
-            ssl_certs.client_id()?.clone(),
+            ssl_certs.client_id()?.to_owned(),
             cfg.file_dir.as_path(),
         ).serve(),
         TlsMitm::new(
             cfg.tls_bind,
-            ssl_certs.server_id()?.clone(),
-            ssl_certs.client_id()?.clone(),
+            ssl_certs.server_id()?.to_owned(),
+            ssl_certs.client_id()?.to_owned(),
             cfg.file_dir.as_path(),
         ).serve(),
     ).await?;

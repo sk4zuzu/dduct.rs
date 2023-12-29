@@ -159,7 +159,7 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
         let port = uri.port().map(|p| p.as_u16()).or(Some(443)).unwrap();
 
         let connector = native_tls::TlsConnector::builder()
-            .identity(self.maybe_client_id.as_ref().unwrap().clone())
+            .identity(self.maybe_client_id.as_ref().unwrap().to_owned())
             .danger_accept_invalid_certs(true)
             .build()?;
         let connector = TlsConnector::from(connector);
@@ -198,7 +198,7 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
                     );
                     let location = rsp.headers().get(header::LOCATION).unwrap();
                     let uri = location.to_str().unwrap().parse::<Uri>().unwrap();
-                    *req.uri_mut() = uri.clone();
+                    *req.uri_mut() = uri.to_owned();
                     req.headers_mut().remove(header::AUTHORIZATION);
                     req.headers_mut().remove(header::HOST);
                     req.headers_mut().insert(header::HOST, uri.host().unwrap().parse().unwrap());
@@ -237,8 +237,8 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
         if req.uri().scheme() == Some(&Scheme::HTTP) {
             loop {
                 let peer_stream = self.tcp_connect(req).await?;
-                let mut peer_engine = ProxyEngine::new(peer_stream, None, None, self.file_opener.file_dir.clone());
-                let result = self._proxy_request(req, cached, Some(path.clone()), &mut peer_engine).await;
+                let mut peer_engine = ProxyEngine::new(peer_stream, None, None, self.file_opener.file_dir.to_owned());
+                let result = self._proxy_request(req, cached, Some(path.to_owned()), &mut peer_engine).await;
                 peer_engine.shutdown().await.ok();
                 if let Err(DductError::Redirected) = result { continue; }
                 return result;
@@ -246,8 +246,8 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
         } else {
             loop {
                 let peer_stream = self.tls_connect(req).await?;
-                let mut peer_engine = ProxyEngine::new(peer_stream, None, None, self.file_opener.file_dir.clone());
-                let result = self._proxy_request(req, cached, Some(path.clone()), &mut peer_engine).await;
+                let mut peer_engine = ProxyEngine::new(peer_stream, None, None, self.file_opener.file_dir.to_owned());
+                let result = self._proxy_request(req, cached, Some(path.to_owned()), &mut peer_engine).await;
                 peer_engine.shutdown().await.ok();
                 if let Err(DductError::Redirected) = result { continue; }
                 return result;
