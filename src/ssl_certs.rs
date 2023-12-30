@@ -12,7 +12,7 @@ use openssl::x509::extension::{AuthorityKeyIdentifier, SubjectKeyIdentifier};
 use openssl::x509::extension::{BasicConstraints, ExtendedKeyUsage, KeyUsage, SubjectAlternativeName};
 use std::default::Default;
 use std::fs::{self};
-use std::path::PathBuf;
+use std::path::Path;
 use tokio_native_tls::native_tls::Identity;
 
 const CERTIFICATE_VERSION: i32 = 2;
@@ -67,7 +67,7 @@ impl SslCerts {
 
     fn ensure_pkey<F: Fn() -> Result<PKey<Private>>>(
         maybe_pkey: &mut Option<PKey<Private>>,
-        path: &PathBuf,
+        path: &Path,
         generate: F,
     ) -> Result<()> {
         if path.exists() {
@@ -79,22 +79,25 @@ impl SslCerts {
                 )?,
             );
         }
+
         if let None = maybe_pkey {
             *maybe_pkey = Some(
                 generate()?,
             );
         }
+
         if !path.exists() {
             let contents = maybe_pkey.as_ref().unwrap().rsa()?.private_key_to_pem()?;
             log::info!("Write {:?}", path);
             fs::write(path, contents)?;
         }
+
         Ok(())
     }
 
     fn ensure_cert<F: Fn() -> Result<X509>>(
         maybe_cert: &mut Option<X509>,
-        path: &PathBuf,
+        path: &Path,
         generate: F,
     ) -> Result<()> {
         if path.exists() {
@@ -119,7 +122,7 @@ impl SslCerts {
 
     fn ensure_p12<F: Fn() -> Result<Pkcs12>>(
         maybe_p12: &mut Option<Pkcs12>,
-        path: &PathBuf,
+        path: &Path,
         generate: F,
     ) -> Result<()> {
         if path.exists() {
@@ -145,28 +148,21 @@ impl SslCerts {
     fn ensure_ca_pkey(&mut self) -> Result<()> {
         let path = self.cfg.cert_dir.join("ca.key");
         let rsa_key_bits = self.cfg.rsa_key_bits;
+
         Self::ensure_pkey(&mut self.ca_pkey, &path, || {
             Ok(PKey::from_rsa(Rsa::generate(rsa_key_bits)?)?)
         })
     }
 
     fn append_ca_extensions(builder: &mut X509Builder) -> Result<()> {
+        let ext = SubjectKeyIdentifier::new()
+            .build(&builder.x509v3_context(None, None))?;
+        builder.append_extension(ext)?;
+
         let ext = BasicConstraints::new()
             .critical()
             .ca()
             .build()?;
-        builder.append_extension(ext)?;
-
-        let ext = KeyUsage::new()
-            .critical()
-            .key_cert_sign()
-            .crl_sign()
-            .build()?;
-        builder.append_extension(ext)?;
-
-        let context = builder.x509v3_context(None, None);
-        let ext = SubjectKeyIdentifier::new()
-            .build(&context)?;
         builder.append_extension(ext)?;
 
         Ok(())
@@ -177,6 +173,7 @@ impl SslCerts {
         let ca_cn = self.cfg.ca_cn.to_owned();
         let path = self.cfg.cert_dir.join("ca.crt");
         let pkey = self.ca_pkey.to_owned().unwrap();
+
         Self::ensure_cert(&mut self.ca_cert, &path, || {
             let not_before = Asn1Time::days_from_now(0)?;
             let not_after = Asn1Time::days_from_now(days_from_now)?;
@@ -195,14 +192,15 @@ impl SslCerts {
             cert.set_issuer_name(&subject_name)?;
             Self::append_ca_extensions(&mut cert)?;
             cert.sign(&pkey, MessageDigest::sha256())?;  // self-signed
-            let cert = cert.build();
-            Ok(cert)
+
+            Ok(cert.build())
         })
     }
 
     fn ensure_server_pkey(&mut self) -> Result<()> {
         let rsa_key_bits = self.cfg.rsa_key_bits;
         let path = self.cfg.cert_dir.join("server.key");
+
         Self::ensure_pkey(&mut self.server_pkey, &path, || {
             Ok(PKey::from_rsa(Rsa::generate(rsa_key_bits)?)?)
         })
@@ -214,11 +212,14 @@ impl SslCerts {
         maybe_dns_sans: Option<Vec<String>>,
         maybe_ip_sans: Option<Vec<String>>,
     ) -> Result<()> {
-        let context = builder.x509v3_context(Some(issuer), None);
+        let ext = SubjectKeyIdentifier::new()
+            .build(&builder.x509v3_context(Some(issuer), None))?;
+        builder.append_extension(ext)?;
+
         let ext = AuthorityKeyIdentifier::new()
-            .keyid(true)
-            .issuer(true)
-            .build(&context)?;
+            .keyid(false)
+            .issuer(false)
+            .build(&builder.x509v3_context(Some(issuer), None))?;
         builder.append_extension(ext)?;
 
         let ext = BasicConstraints::new()
@@ -227,7 +228,6 @@ impl SslCerts {
         builder.append_extension(ext)?;
 
         let ext = ExtendedKeyUsage::new()
-            .critical()
             .client_auth()
             .code_signing()
             .server_auth()
@@ -235,7 +235,6 @@ impl SslCerts {
         builder.append_extension(ext)?;
 
         let ext = KeyUsage::new()
-            .critical()
             .data_encipherment()
             .digital_signature()
             .key_encipherment()
@@ -243,7 +242,6 @@ impl SslCerts {
             .build()?;
         builder.append_extension(ext)?;
 
-        let context = builder.x509v3_context(Some(issuer), None);
         let mut sans = SubjectAlternativeName::new();
         if let Some(dns_sans) = maybe_dns_sans {
             for san in dns_sans { sans.dns(san.as_str()); }
@@ -251,7 +249,7 @@ impl SslCerts {
         if let Some(ip_sans) = maybe_ip_sans {
             for san in ip_sans { sans.ip(san.as_str()); }
         }
-        let ext = sans.build(&context)?;
+        let ext = sans.build(&builder.x509v3_context(Some(issuer), None))?;
         builder.append_extension(ext)?;
 
         Ok(())
@@ -266,6 +264,7 @@ impl SslCerts {
         let pkey = self.server_pkey.to_owned().unwrap();
         let ca_cert = self.ca_cert.to_owned().unwrap();
         let ca_pkey = self.ca_pkey.to_owned().unwrap();
+
         Self::ensure_cert(&mut self.server_cert, &path, || {
             let not_before = Asn1Time::days_from_now(0)?;
             let not_after = Asn1Time::days_from_now(days_from_now)?;
@@ -280,12 +279,17 @@ impl SslCerts {
             cert.set_pubkey(&pkey)?;
             cert.set_not_before(&not_before)?;
             cert.set_not_after(&not_after)?;
+            cert.set_issuer_name(ca_cert.subject_name())?;
             cert.set_subject_name(&subject_name)?;
-            Self::append_server_extensions(&mut cert, &ca_cert, Some(server_dns_sans.to_owned()),
-                                                                Some(server_ip_sans.to_owned()))?;
+            Self::append_server_extensions(
+                &mut cert,
+                &ca_cert,
+                Some(server_dns_sans.to_owned()),
+                Some(server_ip_sans.to_owned()),
+            )?;
             cert.sign(&ca_pkey, MessageDigest::sha256())?;
-            let cert = cert.build();
-            Ok(cert)
+
+            Ok(cert.build())
         })
     }
 
@@ -295,22 +299,25 @@ impl SslCerts {
         let pkey = self.server_pkey.to_owned().unwrap();
         let cert = self.server_cert.to_owned().unwrap();
         let ca_cert = self.ca_cert.to_owned().unwrap();
+
         Self::ensure_p12(&mut self.server_p12, &path, || {
             let mut ca = Stack::new()?;
             ca.push(ca_cert.to_owned())?;
+
             let mut p12 = Pkcs12::builder();
             p12.ca(ca);
             p12.name(P12_NAME);
             p12.pkey(&pkey);
             p12.cert(&cert);
-            let p12 = p12.build2(p12_pass.as_str())?;
-            Ok(p12)
+
+            Ok(p12.build2(p12_pass.as_str())?)
         })
     }
 
     fn ensure_client_pkey(&mut self) -> Result<()> {
         let rsa_key_bits = self.cfg.rsa_key_bits;
         let path = self.cfg.cert_dir.join("client.key");
+
         Self::ensure_pkey(&mut self.client_pkey, &path, || {
             Ok(PKey::from_rsa(Rsa::generate(rsa_key_bits)?)?)
         })
@@ -323,6 +330,7 @@ impl SslCerts {
         let pkey = self.client_pkey.to_owned().unwrap();
         let ca_cert = self.ca_cert.to_owned().unwrap();
         let ca_pkey = self.ca_pkey.to_owned().unwrap();
+
         Self::ensure_cert(&mut self.client_cert, &path, || {
             let not_before = Asn1Time::days_from_now(0)?;
             let not_after = Asn1Time::days_from_now(days_from_now)?;
@@ -337,12 +345,17 @@ impl SslCerts {
             cert.set_pubkey(&pkey)?;
             cert.set_not_before(&not_before)?;
             cert.set_not_after(&not_after)?;
+            cert.set_issuer_name(ca_cert.subject_name())?;
             cert.set_subject_name(&subject_name)?;
-            Self::append_server_extensions(&mut cert, &ca_cert, None,
-                                                                None)?;
+            Self::append_server_extensions(
+                &mut cert,
+                &ca_cert,
+                Some(vec![client_cn.to_owned()]),
+                None,
+            )?;
             cert.sign(&ca_pkey, MessageDigest::sha256())?;
-            let cert = cert.build();
-            Ok(cert)
+
+            Ok(cert.build())
         })
     }
 
@@ -352,16 +365,18 @@ impl SslCerts {
         let pkey = self.client_pkey.to_owned().unwrap();
         let cert = self.client_cert.to_owned().unwrap();
         let ca_cert = self.ca_cert.to_owned().unwrap();
+
         Self::ensure_p12(&mut self.client_p12, &path, || {
             let mut ca = Stack::new()?;
             ca.push(ca_cert.to_owned())?;
+
             let mut p12 = Pkcs12::builder();
             p12.ca(ca);
             p12.name(P12_NAME);
             p12.pkey(&pkey);
             p12.cert(&cert);
-            let p12 = p12.build2(p12_pass.as_str())?;
-            Ok(p12)
+
+            Ok(p12.build2(p12_pass.as_str())?)
         })
     }
 
@@ -384,10 +399,31 @@ impl SslCerts {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openssl::x509::X509VerifyResult;
+    use std::process::Command;
 
     fn setup() {
         env_logger::try_init_from_env(
             env_logger::Env::default().filter_or(env_logger::DEFAULT_FILTER_ENV, "debug")).ok();
+    }
+
+    fn display_cert(cert_path: &Path) -> Result<String> {
+        let output = Command::new("openssl")
+            .arg("x509")
+            .arg("-in")
+            .arg(cert_path)
+            .arg("-text")
+            .arg("-noout")
+            .output()?;
+
+        Ok(unsafe { String::from_utf8_unchecked(output.stdout) })
+    }
+
+    fn ca_issued_cert(ca_cert: &X509, any_cert: &X509) -> bool {
+        match ca_cert.issued(any_cert) {
+            X509VerifyResult::OK => true,
+            _ => false,
+        }
     }
 
     #[test]
@@ -406,6 +442,34 @@ mod tests {
         ssl_certs.generate()?;
         ssl_certs.server_id()?;
         ssl_certs.client_id()?;
+
+        log::info!(
+            "{:?} ->\n{}",
+            &cfg.cert_dir.join("ca.crt"),
+            display_cert(&cfg.cert_dir.join("ca.crt"))?,
+        );
+
+        log::info!(
+            "{:?} ->\n{}",
+            &cfg.cert_dir.join("server.crt"),
+            display_cert(&cfg.cert_dir.join("server.crt"))?,
+        );
+
+        log::info!(
+            "{:?} ->\n{}",
+            &cfg.cert_dir.join("client.crt"),
+            display_cert(&cfg.cert_dir.join("client.crt"))?,
+        );
+
+        assert!(ca_issued_cert(
+            &ssl_certs.ca_cert.to_owned().unwrap(),
+            &ssl_certs.server_cert.to_owned().unwrap()
+        ));
+
+        assert!(ca_issued_cert(
+            &ssl_certs.ca_cert.to_owned().unwrap(),
+            &ssl_certs.client_cert.to_owned().unwrap()
+        ));
 
         Ok(())
     }

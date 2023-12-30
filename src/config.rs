@@ -122,10 +122,10 @@ impl Default for DductCfg {
             rsa_key_bits: 3072,
             days_from_now: 3072,
             ca_cn: "dduct".into(),
-            server_cn: "*.dduct.lh".into(),
+            server_cn: "*.dduct.rs".into(),
             server_dns_sans: vec!["*.dduct.rs".into(), "*.docker.io".into()],
             server_ip_sans: vec!["127.0.0.1".into()],
-            client_cn: "*.dduct.lh".into(),
+            client_cn: "client.dduct.rs".into(),
             p12_pass: "dduct".into(),
         }
     }
@@ -183,7 +183,6 @@ mod tests {
         setup();
 
         let dir = tempdir::TempDir::new("dduct")?;
-
         let args = DductArgs { cfg_path: dir.path().join("dduct.toml"), ..Default::default() };
 
         fs::write(args.cfg_path.as_path(), indoc::indoc! {r#"
