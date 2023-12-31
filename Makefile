@@ -97,15 +97,12 @@ podman-pull:
 
 .PHONY: skopeo-pull
 
-skopeo-pull: _TMPDIR := $(shell mktemp -d /tmp/dduct-skopeo-XXXX)
 skopeo-pull:
-	@install -d $$_TMPDIR/ && echo $$_TMPDIR/
 	HTTP_PROXY=$(_HTTP_PROXY_) \
 	HTTPS_PROXY=$(_HTTPS_PROXY_) \
 	skopeo --debug --insecure-policy \
 	copy --src-tls-verify=false \
-	docker://$(ARTIFACT1) dir:$$_TMPDIR/
-
+	docker://$(ARTIFACT1) dir:$$(mktemp -d /tmp/dduct-skopeo-XXXX)
 .PHONY: t-curl test-curl
 
 t-curl test-curl:

@@ -8,7 +8,7 @@ set -o errexit -o nounset
 
 [[ -n "$_URL" ]]
 
-_TMPDIR="$(mktemp -d /tmp/dduct-curl-XXXX)" && install -d "$_TMPDIR/" && echo "$_TMPDIR/"
+_TMPDIR="$(mktemp -d /tmp/dduct-curl-XXXX)" && echo "$_TMPDIR/"
 
 xargs --no-run-if-empty -i{} -n1 -P4 sh -c '{}' <<EOF
 sleep       0; curl -s --proxy-insecure --proxy $_PROXY --insecure $_URL --output $_TMPDIR/A && echo A;
