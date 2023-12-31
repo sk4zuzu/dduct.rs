@@ -24,7 +24,6 @@ clap = { version = "*", features = ["derive"] }
 env_logger = "*"
 futures = "*"
 http = "*"
-lazy_static = "*"
 log = "*"
 nix = { version = "*", features = ["fs"] }
 openssl = "*"

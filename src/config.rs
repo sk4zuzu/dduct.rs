@@ -75,6 +75,7 @@ struct CfgMisc {
 struct CfgProxy {
     tcp_bind: Option<SocketAddr>,
     tls_bind: Option<SocketAddr>,
+    filters: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -97,6 +98,7 @@ pub struct DductCfg {
 
     pub tcp_bind: SocketAddr,
     pub tls_bind: SocketAddr,
+    pub filters: Vec<String>,
 
     pub rsa_key_bits: u32,
     pub days_from_now: u32,
@@ -118,13 +120,24 @@ impl Default for DductCfg {
 
             tcp_bind: ([127, 0, 0, 1], 8000).into(),
             tls_bind: ([0, 0, 0, 0], 4430).into(),
+            filters: vec![
+                r"^/v2/.*/blobs/sha256:\w+$".into(),
+                r"^/.*\.(?:apk|deb|rpm)$".into(),
+                r"^/.*\.(?:tar|tbz|tgz|txz)$".into(),
+                r"^/.*\.(?:7z|bz2|gz|xz|zip|zst)$".into(),
+            ],
 
             rsa_key_bits: 3072,
             days_from_now: 3072,
             ca_cn: "dduct".into(),
             server_cn: "*.dduct.rs".into(),
-            server_dns_sans: vec!["*.dduct.rs".into(), "*.docker.io".into()],
-            server_ip_sans: vec!["127.0.0.1".into()],
+            server_dns_sans: vec![
+                "*.dduct.rs".into(),
+                "*.docker.io".into(),
+            ],
+            server_ip_sans: vec![
+                "127.0.0.1".into(),
+            ],
             client_cn: "client.dduct.rs".into(),
             p12_pass: "dduct".into(),
         }
@@ -155,6 +168,7 @@ pub fn parse_cfg(args: &DductArgs) -> Result<DductCfg> {
     let proxy = parsed.proxy.as_ref().unwrap();
     resolve!(proxy, tcp_bind, tcp_bind);
     resolve!(proxy, tls_bind, tls_bind);
+    resolve!(proxy, filters, filters);
 
     let certs = parsed.certs.as_ref().unwrap();
     resolve!(certs, rsa_key_bits, rsa_key_bits);
@@ -187,16 +201,19 @@ mod tests {
 
         fs::write(args.cfg_path.as_path(), indoc::indoc! {r#"
             [misc]
-            log_level = "debug"
-            cert_dir = "/var/tmp/dduct/certs/"
-            #file_dir = "/var/tmp/dduct/files/"
+            log_level = 'debug'
+            cert_dir = '/var/tmp/dduct/certs/'
+            #file_dir = '/var/tmp/dduct/files/'
+
             [proxy]
-            #tcp_bind = "127.0.0.1:8000"
-            tls_bind = "1.2.3.4:1234"
+            #tcp_bind = '127.0.0.1:8000'
+            tls_bind = '1.2.3.4:1234'
+            filters = ['^/v2/.*/blobs/sha256:\w+$']
+
             #[certs]
             #rsa_key_bits = 3072
-            #server_ip_sans = ["127.0.0.1"]
-            p12_pass = "asd"
+            #server_ip_sans = ['127.0.0.1']
+            p12_pass = 'asd'
         "#})?;
 
         let cfg = parse_cfg(&args)?;
@@ -207,6 +224,7 @@ mod tests {
 
         assert_eq!(cfg.tcp_bind, ([127, 0, 0, 1], 8000).into()); // default
         assert_eq!(cfg.tls_bind, ([1, 2, 3, 4], 1234).into());
+        assert_eq!(cfg.filters, vec![r"^/v2/.*/blobs/sha256:\w+$".to_string()]);
 
         assert_eq!(cfg.rsa_key_bits, 3072); // default
         assert_eq!(cfg.server_ip_sans, vec!["127.0.0.1".to_string()]); // default

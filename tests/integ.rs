@@ -1,4 +1,4 @@
-use dduct::{DductCfg, HttpProxy, Result, SslCerts, TlsMitm, serve};
+use dduct::{DductCfg, FileOpener, HttpProxy, Result, SslCerts, TlsMitm, serve};
 use futures::future;
 use hex::{self};
 use rand::distributions::Alphanumeric;
@@ -130,14 +130,14 @@ async fn test_static() -> Result<()> {
                 ([0, 0, 0, 0], 8001).into(),
                 ([127, 0, 0, 1], 4431).into(),
                 ssl_certs.client_id()?.to_owned(),
-                static_dir.path(),
+                FileOpener::new(static_dir.path(), None),
             ).serve(),
             // Helper: serve static files over tls..
             TlsMitm::new(
                 ([0, 0, 0, 0], 4432).into(),
                 ssl_certs.server_id()?.to_owned(),
                 ssl_certs.client_id()?.to_owned(),
-                static_dir.path(),
+                FileOpener::new(static_dir.path(), None),
             ).serve(),
             // Tests: run some requests..
             async {
@@ -204,14 +204,14 @@ async fn test_serial() -> Result<()> {
                 ([0, 0, 0, 0], 8001).into(),
                 ([127, 0, 0, 1], 4431).into(),
                 ssl_certs.client_id()?.to_owned(),
-                static_dir.path(),
+                FileOpener::new(static_dir.path(), None),
             ).serve(),
             // Helper: serve static files over tls..
             TlsMitm::new(
                 ([0, 0, 0, 0], 4432).into(),
                 ssl_certs.server_id()?.to_owned(),
                 ssl_certs.client_id()?.to_owned(),
-                static_dir.path(),
+                FileOpener::new(static_dir.path(), None),
             ).serve(),
             // Run full proxy..
             serve(&cfg, &ssl_certs),
@@ -284,7 +284,7 @@ async fn test_parallel() -> Result<()> {
                 ([0, 0, 0, 0], 4434).into(),
                 ssl_certs.server_id()?.to_owned(),
                 ssl_certs.client_id()?.to_owned(),
-                static_dir.path(),
+                FileOpener::new(static_dir.path(), None),
             ).serve(),
             // Run full proxy..
             serve(&cfg, &ssl_certs),

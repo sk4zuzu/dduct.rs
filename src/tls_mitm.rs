@@ -1,6 +1,5 @@
-use crate::{ProxyEngine, Result};
+use crate::{FileOpener, ProxyEngine, Result};
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
 use tokio::net::TcpListener;
 use tokio_native_tls::TlsAcceptor;
 use tokio_native_tls::native_tls::{self, Identity};
@@ -9,7 +8,7 @@ pub struct TlsMitm {
     bind_addr: SocketAddr,
     server_id: Identity,
     client_id: Identity,
-    file_dir: PathBuf,
+    file_opener: FileOpener,
 }
 
 impl TlsMitm {
@@ -17,10 +16,9 @@ impl TlsMitm {
         bind_addr: SocketAddr,
         server_id: Identity,
         client_id: Identity,
-        file_dir: &Path,
+        file_opener: FileOpener,
     ) -> Self {
-        let file_dir = file_dir.into();
-        Self { bind_addr, server_id, client_id, file_dir }
+        Self { bind_addr, server_id, client_id, file_opener }
     }
 
     pub async fn serve(&self) -> Result<()> {
@@ -38,11 +36,16 @@ impl TlsMitm {
 
             let conn_addr = self.bind_addr.to_owned();
             let client_id = self.client_id.to_owned();
-            let file_dir = self.file_dir.to_owned();
+            let file_opener = self.file_opener.to_owned();
 
             tokio::spawn(async move {
                 let stream = acceptor.accept(stream).await?;
-                ProxyEngine::new(stream, Some(conn_addr), Some(client_id), file_dir).run().await
+                ProxyEngine::new(
+                    stream,
+                    Some(conn_addr),
+                    Some(client_id),
+                    file_opener,
+                ).run().await
             });
         }
     }

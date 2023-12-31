@@ -25,10 +25,9 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
         stream: S,
         maybe_mitm_addr: Option<SocketAddr>,
         maybe_client_id: Option<Identity>,
-        file_dir: PathBuf,
+        file_opener: FileOpener,
     ) -> Self {
         let closed = false;
-        let file_opener = FileOpener::new(file_dir);
         Self { stream, closed, maybe_mitm_addr, maybe_client_id, file_opener }
     }
 
@@ -237,8 +236,18 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
         if req.uri().scheme() == Some(&Scheme::HTTP) {
             loop {
                 let peer_stream = self.tcp_connect(req).await?;
-                let mut peer_engine = ProxyEngine::new(peer_stream, None, None, self.file_opener.file_dir.to_owned());
-                let result = self._proxy_request(req, cached, Some(path.to_owned()), &mut peer_engine).await;
+                let mut peer_engine = ProxyEngine::new(
+                    peer_stream,
+                    None,
+                    None,
+                    FileOpener::new(self.file_opener.file_dir.as_path(), None),
+                );
+                let result = self._proxy_request(
+                    req,
+                    cached,
+                    Some(path.to_owned()),
+                    &mut peer_engine,
+                ).await;
                 peer_engine.shutdown().await.ok();
                 if let Err(DductError::Redirected) = result { continue; }
                 return result;
@@ -246,8 +255,18 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
         } else {
             loop {
                 let peer_stream = self.tls_connect(req).await?;
-                let mut peer_engine = ProxyEngine::new(peer_stream, None, None, self.file_opener.file_dir.to_owned());
-                let result = self._proxy_request(req, cached, Some(path.to_owned()), &mut peer_engine).await;
+                let mut peer_engine = ProxyEngine::new(
+                    peer_stream,
+                    None,
+                    None,
+                    FileOpener::new(self.file_opener.file_dir.as_path(), None),
+                );
+                let result = self._proxy_request(
+                    req,
+                    cached,
+                    Some(path.to_owned()),
+                    &mut peer_engine,
+                ).await;
                 peer_engine.shutdown().await.ok();
                 if let Err(DductError::Redirected) = result { continue; }
                 return result;
