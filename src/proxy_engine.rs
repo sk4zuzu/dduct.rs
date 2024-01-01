@@ -6,7 +6,7 @@ use http::status::StatusCode;
 use http::uri::{Scheme, Uri};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use tokio::fs::{File, rename};
+use tokio::fs::{File, remove_file, rename};
 use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_native_tls::{TlsConnector, TlsStream};
@@ -73,7 +73,11 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
         self.send_response(&rsp).await
     }
 
-    async fn send_file(&mut self, file: &mut File, maybe_length: Option<u64>) -> Result<()> {
+    async fn send_file(
+        &mut self,
+        file: &mut File,
+        maybe_length: Option<u64>,
+    ) -> Result<()> {
         let mut build = http::Response::builder();
         build = build.status(StatusCode::OK);
         build = build.header(header::CONNECTION, "close");
@@ -84,31 +88,53 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
         Ok(())
     }
 
-    async fn send_partial_file(&mut self, file: &mut File, tmp_path: &Path) -> Result<()> {
+    async fn send_partial_file(
+        &mut self,
+        file: &mut File,
+        tmp_path: &Path,
+        maybe_length: Option<u64>,
+    ) -> Result<()> {
         let rsp = http::Response::builder()
             .status(StatusCode::OK)
             .header(header::CONNECTION, "close")
             .body(Some("".into()))
             .unwrap();
         self.send_response(&rsp).await?;
-        while { self.copy_from(file).await?; tmp_path.exists() } {}
+        if let Some(length) = maybe_length {
+            let mut done: u64 = 0;
+            loop {
+                let n = self.copy_from(file).await?;
+                done += n;
+                if done >= length {
+                    break;
+                }
+                if n == 0 && !tmp_path.exists() {
+                    return Err(DductError::Incomplete);
+                }
+            }
+        } else {
+            loop {
+                let n = self.copy_from(file).await?;
+                if n == 0 && !tmp_path.exists() {
+                    return Err(DductError::Incomplete);
+                }
+            }
+        }
         Ok(())
     }
 
-    async fn copy_from<A>(&mut self, stream_a: &mut A) -> Result<()>
+    async fn copy_from<A>(&mut self, stream_a: &mut A) -> Result<u64>
     where
         A: AsyncReadExt + AsyncWriteExt + Unpin,
     {
-        io::copy(stream_a, &mut self.stream).await?;
-        Ok(())
+        Ok(io::copy(stream_a, &mut self.stream).await?)
     }
 
-    async fn copy_to<A>(&mut self, stream_a: &mut A) -> Result<()>
+    async fn copy_to<A>(&mut self, stream_a: &mut A) -> Result<u64>
     where
         A: AsyncReadExt + AsyncWriteExt + Unpin,
     {
-        io::copy(&mut self.stream, stream_a).await?;
-        Ok(())
+        Ok(io::copy(&mut self.stream, stream_a).await?)
     }
 
     async fn dcopy_to<A, B>(&mut self, stream_a: &mut A, stream_b: &mut B) -> Result<()>
@@ -185,10 +211,16 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
 
         if let Some(rsp) = peer_engine.recv_response().await? {
             log::debug!("proxy_request(): RSP {:?} {:?}", rsp.status(), rsp.headers());
+
+            let maybe_length: Option<u64> = rsp.headers()
+                .get(header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok().and_then(|s| s.parse().ok()));
+
             match rsp.status() {
                 StatusCode::NOT_FOUND | StatusCode::UNAUTHORIZED => {
                     self.send_response(&rsp).await?;
-                    peer_engine.copy_to(&mut self.stream).await
+                    peer_engine.copy_to(&mut self.stream).await?;
+                    Ok(())
                 },
                 StatusCode::MOVED_PERMANENTLY | StatusCode::FOUND | StatusCode::TEMPORARY_REDIRECT | StatusCode::PERMANENT_REDIRECT => {
                     let referer = format!("https://{}{}",
@@ -208,14 +240,25 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
                     match self.file_opener.open_partial_wo_or_ro(req, maybe_path).await {
                         Ok((mut file, tmp_path, path, write_only)) => {
                             if write_only {
-                                if let Some(ref body) = rsp.body() { file.write_all(body).await?; }
-                                self.send_response(&rsp).await?;
-                                peer_engine.dcopy_to(&mut self.stream, &mut file).await?;
-                                rename(tmp_path.as_path(), path.as_path()).await?;
-                                Ok(())
+                                let copy_data = async {
+                                    if let Some(ref body) = rsp.body() { file.write_all(body).await?; }
+                                    self.send_response(&rsp).await?;
+                                    peer_engine.dcopy_to(&mut self.stream, &mut file).await?;
+                                    Ok::<(), DductError>(())
+                                };
+                                match copy_data.await {
+                                    Ok(()) => {
+                                        rename(tmp_path.as_path(), path.as_path()).await?;
+                                        Ok(())
+                                    },
+                                    Err(e) => {
+                                        remove_file(tmp_path.as_path()).await?; // cleanup
+                                        Err(e)
+                                    },
+                                }
                             } else {
                                 peer_engine.shutdown().await.ok();
-                                self.send_partial_file(&mut file, tmp_path.as_path()).await
+                                self.send_partial_file(&mut file, tmp_path.as_path(), maybe_length).await
                             }
                         },
                         Err(e) => Err(e),
@@ -223,7 +266,8 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
                 },
                 _ => {
                     self.send_response(&rsp).await?;
-                    peer_engine.copy_to(&mut self.stream).await
+                    peer_engine.copy_to(&mut self.stream).await?;
+                    Ok(())
                 }
             }
         } else {
@@ -302,15 +346,7 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
                 self.proxy_request(req, false).await
             },
             Err(DductError::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound => {
-                match self.file_opener.open_partial_ro(req).await {
-                    Ok((mut file, tmp_path, _)) => {
-                        self.send_partial_file(&mut file, tmp_path.as_path()).await
-                    },
-                    Err(DductError::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound => {
-                        self.proxy_request(req, self.file_opener.is_cached(req)).await
-                    },
-                    Err(e) => Err(e),
-                }
+                self.proxy_request(req, self.file_opener.is_cached(req)).await
             },
             Err(e) => Err(e),
         }

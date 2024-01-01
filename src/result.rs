@@ -14,6 +14,9 @@ pub enum DductError {
     #[error("Redirected")]
     Redirected,
 
+    #[error("Incomplete")]
+    Incomplete,
+
     #[error(transparent)]
     Toml(#[from] toml::de::Error),
 
