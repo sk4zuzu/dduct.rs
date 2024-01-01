@@ -134,6 +134,12 @@ impl Default for DductCfg {
             server_dns_sans: vec![
                 "*.dduct.rs".into(),
                 "*.docker.io".into(),
+                "*.gcr.io".into(),
+                "*.githubusercontent.com".into(),
+                "*.k8s.io".into(),
+                "*.quay.io".into(),
+                "ghcr.io".into(),
+                "quay.io".into(),
             ],
             server_ip_sans: vec![
                 "127.0.0.1".into(),
