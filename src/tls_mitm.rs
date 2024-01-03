@@ -1,28 +1,26 @@
-use crate::{FileOpener, ProxyEngine, Result};
+use crate::{FileOpener, ProxyEngine, Result, SslCerts};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tokio_native_tls::TlsAcceptor;
-use tokio_native_tls::native_tls::{self, Identity};
+use tokio_native_tls::native_tls::{self};
 
-pub struct TlsMitm {
+pub struct TlsMitm<'a> {
     bind_addr: SocketAddr,
-    server_id: Identity,
-    client_id: Identity,
-    file_opener: FileOpener,
+    ssl_certs: &'a SslCerts,
+    file_opener: &'a FileOpener,
 }
 
-impl TlsMitm {
+impl<'a> TlsMitm<'a> {
     pub fn new(
         bind_addr: SocketAddr,
-        server_id: Identity,
-        client_id: Identity,
-        file_opener: FileOpener,
+        ssl_certs: &'a SslCerts,
+        file_opener: &'a FileOpener,
     ) -> Self {
-        Self { bind_addr, server_id, client_id, file_opener }
+        Self { bind_addr, ssl_certs, file_opener }
     }
 
     pub async fn serve(&self) -> Result<()> {
-        let acceptor = native_tls::TlsAcceptor::new(self.server_id.to_owned())?;
+        let acceptor = native_tls::TlsAcceptor::new(self.ssl_certs.server_id()?)?;
         let acceptor = TlsAcceptor::from(acceptor);
 
         let listener = TcpListener::bind(self.bind_addr).await?;
@@ -35,7 +33,9 @@ impl TlsMitm {
             let acceptor = acceptor.to_owned();
 
             let conn_addr = self.bind_addr.to_owned();
-            let client_id = self.client_id.to_owned();
+            let client_id = self.ssl_certs.client_id()?.to_owned();
+            let server_dns_sans = self.ssl_certs.server_dns_sans.to_owned();
+            let server_ip_sans = self.ssl_certs.server_ip_sans.to_owned();
             let file_opener = self.file_opener.to_owned();
 
             tokio::spawn(async move {
@@ -44,6 +44,8 @@ impl TlsMitm {
                     stream,
                     Some(conn_addr),
                     Some(client_id),
+                    server_dns_sans,
+                    server_ip_sans,
                     file_opener,
                 ).run().await
             });

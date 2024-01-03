@@ -122,6 +122,8 @@ async fn test_static() -> Result<()> {
     let mut ssl_certs = SslCerts::new(&cfg);
     ssl_certs.generate()?;
 
+    let file_opener = FileOpener::new(static_dir.path(), None);
+
     let result = time::timeout(
         Duration::from_secs(30),
         future::try_join3(
@@ -129,15 +131,14 @@ async fn test_static() -> Result<()> {
             HttpProxy::new(
                 ([0, 0, 0, 0], 8001).into(),
                 ([127, 0, 0, 1], 4431).into(),
-                ssl_certs.client_id()?.to_owned(),
-                FileOpener::new(static_dir.path(), None),
+                &ssl_certs,
+                &file_opener,
             ).serve(),
             // Helper: serve static files over tls..
             TlsMitm::new(
                 ([0, 0, 0, 0], 4432).into(),
-                ssl_certs.server_id()?.to_owned(),
-                ssl_certs.client_id()?.to_owned(),
-                FileOpener::new(static_dir.path(), None),
+                &ssl_certs,
+                &file_opener,
             ).serve(),
             // Tests: run some requests..
             async {
@@ -196,6 +197,8 @@ async fn test_serial() -> Result<()> {
     let mut ssl_certs = SslCerts::new(&cfg);
     ssl_certs.generate()?;
 
+    let file_opener = FileOpener::new(static_dir.path(), None);
+
     let result = time::timeout(
         Duration::from_secs(30),
         future::try_join4(
@@ -203,15 +206,14 @@ async fn test_serial() -> Result<()> {
             HttpProxy::new(
                 ([0, 0, 0, 0], 8001).into(),
                 ([127, 0, 0, 1], 4431).into(),
-                ssl_certs.client_id()?.to_owned(),
-                FileOpener::new(static_dir.path(), None),
+                &ssl_certs,
+                &file_opener,
             ).serve(),
             // Helper: serve static files over tls..
             TlsMitm::new(
                 ([0, 0, 0, 0], 4432).into(),
-                ssl_certs.server_id()?.to_owned(),
-                ssl_certs.client_id()?.to_owned(),
-                FileOpener::new(static_dir.path(), None),
+                &ssl_certs,
+                &file_opener,
             ).serve(),
             // Run full proxy..
             serve(&cfg, &ssl_certs),
@@ -276,15 +278,16 @@ async fn test_parallel() -> Result<()> {
     let mut ssl_certs = SslCerts::new(&cfg);
     ssl_certs.generate()?;
 
+    let file_opener = FileOpener::new(static_dir.path(), None);
+
     let result = time::timeout(
         Duration::from_secs(45),
         future::try_join5(
             // Helper: serve static files over tls..
             TlsMitm::new(
                 ([0, 0, 0, 0], 4434).into(),
-                ssl_certs.server_id()?.to_owned(),
-                ssl_certs.client_id()?.to_owned(),
-                FileOpener::new(static_dir.path(), None),
+                &ssl_certs,
+                &file_opener,
             ).serve(),
             // Run full proxy..
             serve(&cfg, &ssl_certs),

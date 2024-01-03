@@ -17,6 +17,7 @@ pub struct ProxyEngine<S> {
     pub closed: bool,
     pub maybe_mitm_addr: Option<SocketAddr>,
     pub maybe_client_id: Option<Identity>,
+    pub cached_sans: Vec<String>,
     pub file_opener: FileOpener,
 }
 
@@ -25,10 +26,19 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
         stream: S,
         maybe_mitm_addr: Option<SocketAddr>,
         maybe_client_id: Option<Identity>,
+        server_dns_sans: Vec<String>,
+        server_ip_sans: Vec<String>,
         file_opener: FileOpener,
     ) -> Self {
         let closed = false;
-        Self { stream, closed, maybe_mitm_addr, maybe_client_id, file_opener }
+        let cached_sans: Vec<String> = [
+            server_dns_sans
+                .iter()
+                .map(|s| s.strip_prefix("*").map(|s| s.into()).or(Some(s.to_owned())).unwrap())
+                .collect(),
+            server_ip_sans,
+        ].concat();
+        Self { stream, closed, maybe_mitm_addr, maybe_client_id, cached_sans, file_opener }
     }
 
     async fn recv_request(&mut self) -> Result<Option<Request>> {
@@ -284,6 +294,8 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
                     peer_stream,
                     None,
                     None,
+                    vec![],
+                    vec![],
                     FileOpener::new(self.file_opener.file_dir.as_path(), None),
                 );
                 let result = self._proxy_request(
@@ -303,6 +315,8 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
                     peer_stream,
                     None,
                     None,
+                    vec![],
+                    vec![],
                     FileOpener::new(self.file_opener.file_dir.as_path(), None),
                 );
                 let result = self._proxy_request(
@@ -320,8 +334,30 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
 
     async fn handle_connect(&mut self, req: &Request) -> Result<()> {
         log::debug!("handle_connect(): REQ {:?} {:?} {:?}", req.method(), req.uri(), req.headers());
-        let mitm_addr = self.maybe_mitm_addr.unwrap();
-        let mut peer_stream = TcpStream::connect(mitm_addr).await?;
+        let host = req.uri().host().unwrap();
+        let host_matches = self.cached_sans.iter().any(|h|
+            if host.len() == h.len() {
+                host == h
+            } else {
+                host.ends_with(h)
+            }
+        );
+        let mut peer_stream = if host_matches {
+            let mitm_addr = self.maybe_mitm_addr.unwrap();
+            TcpStream::connect(mitm_addr).await?
+        } else {
+            let port = if let Some(port) = req.uri().port_u16() {
+                port
+            } else {
+                if req.uri().scheme() == Some(&Scheme::HTTPS) {
+                    443
+                } else {
+                    80
+                }
+            };
+            let addr = format!("{}:{}", host, port);
+            TcpStream::connect(addr).await?
+        };
         let rsp = http::Response::builder()
             .status(StatusCode::OK)
             .body(Some("".into()))

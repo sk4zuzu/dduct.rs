@@ -12,7 +12,7 @@ use openssl::x509::extension::{AuthorityKeyIdentifier, SubjectKeyIdentifier};
 use openssl::x509::extension::{BasicConstraints, ExtendedKeyUsage, KeyUsage, SubjectAlternativeName};
 use std::default::Default;
 use std::fs::{self};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio_native_tls::native_tls::Identity;
 
 const CERTIFICATE_VERSION: i32 = 2;
@@ -23,7 +23,15 @@ const CLIENT_P12: &str = "client.p12";
 
 #[derive(Default)]
 pub struct SslCerts {
-    cfg: DductCfg,
+    pub cert_dir: PathBuf,
+    pub rsa_key_bits: u32,
+    pub days_from_now: u32,
+    pub ca_cn: String,
+    pub server_cn: String,
+    pub server_dns_sans: Vec<String>,
+    pub server_ip_sans: Vec<String>,
+    pub client_cn: String,
+    pub p12_pass: String,
 
     ca_pkey: Option<PKey<Private>>,
     ca_cert: Option<X509>,
@@ -39,14 +47,24 @@ pub struct SslCerts {
 
 impl SslCerts {
     pub fn new(cfg: &DductCfg) -> Self {
-        let cfg = cfg.to_owned();
-        Self { cfg, ..Default::default() }
+        Self {
+            cert_dir: cfg.cert_dir.to_owned(),
+            rsa_key_bits: cfg.rsa_key_bits.to_owned(),
+            days_from_now: cfg.days_from_now.to_owned(),
+            ca_cn: cfg.ca_cn.to_owned(),
+            server_cn: cfg.server_cn.to_owned(),
+            server_dns_sans: cfg.server_dns_sans.to_owned(),
+            server_ip_sans: cfg.server_ip_sans.to_owned(),
+            client_cn: cfg.client_cn.to_owned(),
+            p12_pass: cfg.p12_pass.to_owned(),
+            ..Default::default()
+        }
     }
 
     pub fn server_id(&self) -> Result<Identity> {
         let id = Identity::from_pkcs12(
             self.server_p12.as_ref().unwrap().to_der()?.as_slice(),
-            self.cfg.p12_pass.as_str(),
+            self.p12_pass.as_str(),
         )?;
         Ok(id)
     }
@@ -54,7 +72,7 @@ impl SslCerts {
     pub fn client_id(&self) -> Result<Identity> {
         let id = Identity::from_pkcs12(
             self.client_p12.as_ref().unwrap().to_der()?.as_slice(),
-            self.cfg.p12_pass.as_str(),
+            self.p12_pass.as_str(),
         )?;
         Ok(id)
     }
@@ -146,8 +164,8 @@ impl SslCerts {
     }
 
     fn ensure_ca_pkey(&mut self) -> Result<()> {
-        let path = self.cfg.cert_dir.join("ca.key");
-        let rsa_key_bits = self.cfg.rsa_key_bits;
+        let path = self.cert_dir.join("ca.key");
+        let rsa_key_bits = self.rsa_key_bits;
 
         Self::ensure_pkey(&mut self.ca_pkey, &path, || {
             Ok(PKey::from_rsa(Rsa::generate(rsa_key_bits)?)?)
@@ -169,9 +187,9 @@ impl SslCerts {
     }
 
     fn ensure_ca_cert(&mut self) -> Result<()> {
-        let days_from_now = self.cfg.days_from_now;
-        let ca_cn = self.cfg.ca_cn.to_owned();
-        let path = self.cfg.cert_dir.join("ca.crt");
+        let days_from_now = self.days_from_now;
+        let ca_cn = self.ca_cn.to_owned();
+        let path = self.cert_dir.join("ca.crt");
         let pkey = self.ca_pkey.to_owned().unwrap();
 
         Self::ensure_cert(&mut self.ca_cert, &path, || {
@@ -198,8 +216,8 @@ impl SslCerts {
     }
 
     fn ensure_server_pkey(&mut self) -> Result<()> {
-        let rsa_key_bits = self.cfg.rsa_key_bits;
-        let path = self.cfg.cert_dir.join("server.key");
+        let rsa_key_bits = self.rsa_key_bits;
+        let path = self.cert_dir.join("server.key");
 
         Self::ensure_pkey(&mut self.server_pkey, &path, || {
             Ok(PKey::from_rsa(Rsa::generate(rsa_key_bits)?)?)
@@ -256,11 +274,11 @@ impl SslCerts {
     }
 
     fn ensure_server_cert(&mut self) -> Result<()> {
-        let days_from_now = self.cfg.days_from_now;
-        let server_cn = self.cfg.server_cn.to_owned();
-        let server_dns_sans = self.cfg.server_dns_sans.to_vec();
-        let server_ip_sans = self.cfg.server_ip_sans.to_vec();
-        let path = self.cfg.cert_dir.join("server.crt");
+        let days_from_now = self.days_from_now;
+        let server_cn = self.server_cn.to_owned();
+        let server_dns_sans = self.server_dns_sans.to_vec();
+        let server_ip_sans = self.server_ip_sans.to_vec();
+        let path = self.cert_dir.join("server.crt");
         let pkey = self.server_pkey.to_owned().unwrap();
         let ca_cert = self.ca_cert.to_owned().unwrap();
         let ca_pkey = self.ca_pkey.to_owned().unwrap();
@@ -294,8 +312,8 @@ impl SslCerts {
     }
 
     fn ensure_server_p12(&mut self) -> Result<()> {
-        let p12_pass = self.cfg.p12_pass.to_owned();
-        let path = self.cfg.cert_dir.join(SERVER_P12);
+        let p12_pass = self.p12_pass.to_owned();
+        let path = self.cert_dir.join(SERVER_P12);
         let pkey = self.server_pkey.to_owned().unwrap();
         let cert = self.server_cert.to_owned().unwrap();
         let ca_cert = self.ca_cert.to_owned().unwrap();
@@ -315,8 +333,8 @@ impl SslCerts {
     }
 
     fn ensure_client_pkey(&mut self) -> Result<()> {
-        let rsa_key_bits = self.cfg.rsa_key_bits;
-        let path = self.cfg.cert_dir.join("client.key");
+        let rsa_key_bits = self.rsa_key_bits;
+        let path = self.cert_dir.join("client.key");
 
         Self::ensure_pkey(&mut self.client_pkey, &path, || {
             Ok(PKey::from_rsa(Rsa::generate(rsa_key_bits)?)?)
@@ -324,9 +342,9 @@ impl SslCerts {
     }
 
     fn ensure_client_cert(&mut self) -> Result<()> {
-        let days_from_now = self.cfg.days_from_now;
-        let client_cn = self.cfg.client_cn.to_owned();
-        let path = self.cfg.cert_dir.join("client.crt");
+        let days_from_now = self.days_from_now;
+        let client_cn = self.client_cn.to_owned();
+        let path = self.cert_dir.join("client.crt");
         let pkey = self.client_pkey.to_owned().unwrap();
         let ca_cert = self.ca_cert.to_owned().unwrap();
         let ca_pkey = self.ca_pkey.to_owned().unwrap();
@@ -360,8 +378,8 @@ impl SslCerts {
     }
 
     fn ensure_client_p12(&mut self) -> Result<()> {
-        let p12_pass = self.cfg.p12_pass.to_owned();
-        let path = self.cfg.cert_dir.join(CLIENT_P12);
+        let p12_pass = self.p12_pass.to_owned();
+        let path = self.cert_dir.join(CLIENT_P12);
         let pkey = self.client_pkey.to_owned().unwrap();
         let cert = self.client_cert.to_owned().unwrap();
         let ca_cert = self.ca_cert.to_owned().unwrap();
