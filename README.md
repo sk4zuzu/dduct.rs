@@ -1,3 +1,5 @@
+[//]: # ( vim: set wrap : )
+
 DDUCT, MITM HTTP(S) PROXY
 =========================
 
@@ -9,30 +11,25 @@ DDUCT, MITM HTTP(S) PROXY
 
 This is an experimental tool to reduce network utilization in multi container / VM environments like Kubernetes or OpenNebula clusters.
 
-It's really a HTTP(S) proxy server that transparently caches binary files (like Docker / OCI image layers or compressed .txz archives) in
-the local filesystem, and then distributes them for any subsequent request. Effectively each binary file is downloaded only once and then
-cached forever.
+It's really a HTTP(S) proxy server that transparently caches binary files (like Docker / OCI image layers or compressed .txz archives) in your local filesystem, and then distributes them for any subsequent request. Effectively each binary file is downloaded only once and then cached forever.
 
-:warning: It's probably not something you'd use in production clusters, but at least it can actually be utilized in busy integration / test
-environments (with lots of Docker builds / deployments or Apt / Yum upgrades).
+> [!NOTE]
+> It's probably not something you'd use in production clusters, but at least it can actually be utilized in busy integration / test environments (with lots of Docker builds / deployments or Apt / Yum upgrades).
 
 ## 2. PROBLEM
 
-Almost everything runs now on HTTPS, so it's not possible to eavesdrop all that traffic and collect binary data for caching. Even when
-a HTTP(S) proxy is used, HTTPS connections are end-to-end encrypted and clients talk directly to servers through blind TCP conduits.
+Almost everything runs now on HTTPS, so it's not possible to eavesdrop all that traffic and collect binary data for caching. Even when a HTTP(S) proxy is used, HTTPS connections are end-to-end encrypted and clients talk directly to servers through blind TCP conduits.
 
 So you can either host and manage your own package repositories / Docker registries, or try a man-in-the-middle attack. :thinking:
 
 ## 3. SOLUTION?
 
-Since you don't own private keys of various Docker registries and package repositories, you can only fake them instead on client's and
-proxy's sides, re-encrypt the stream, and selectively cache binary data on-the-fly.
+Since you don't own private keys of various Docker registries and package repositories, you can only fake them instead on client's and proxy's sides, re-encrypt the stream, and selectively cache binary data on-the-fly.
 
-Dduct assumes your HTTP(S) clients use HTTP(S) proxy, the HTTP CONNECT method, which creates a direct TCP conduit, but it's redirected
-to a fake / local HTTPS endpoint.
+Dduct assumes your HTTP(S) clients use HTTP(S) proxy, the HTTP CONNECT method, which creates a direct TCP conduit, but it's redirected to a fake / local HTTPS endpoint.
 
-:warning: A fake Certificate Authority is used to generate server keys and certificates, and at least the main CA certificate needs to be
-distributed among all clients.
+> [!NOTE]
+> A fake Certificate Authority is used to generate server keys and certificates, and at least the main CA certificate needs to be distributed among all clients.
 
 ## 4. USAGE
 
@@ -110,8 +107,7 @@ Or if the config file path is not specified from cli, you can put the config fil
 
 Finally if both options are not used, Dduct starts with default values.
 
-Looking at the listing above, `/var/tmp/dduct/certs/` directory contains the `ca.crt` file that needs to be propagated to each
-client's OS (installed with ca-certificates), to make TLS / SSL connections "green".
+Looking at the listing above, `/var/tmp/dduct/certs/` directory contains the `ca.crt` file that needs to be propagated to each client's OS (installed with ca-certificates), to make TLS / SSL connections "green".
 
 To simply test the proxy itself with curl:
 
@@ -125,7 +121,8 @@ Or fully encrypted:
 $ curl -fv --proxy-cacert /var/tmp/dduct/certs/ca.crt -x https://127.0.0.1:4430 --cacert /var/tmp/dduct/certs/ca.crt -LO https://some.thing/here.txz
 ```
 
-:warning: If you'd like to add more dns / ip SANs, then please delete `/var/tmp/dduct/certs/server.*` files and restart the proxy.
+> [!NOTE]
+> If you'd like to add more dns / ip SANs, then please delete `/var/tmp/dduct/certs/server.*` files and restart the proxy.
 
 ```shell
 $ rm /var/tmp/dduct/certs/server.*
