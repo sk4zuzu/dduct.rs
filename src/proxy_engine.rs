@@ -1,10 +1,12 @@
-use crate::{DductError, FileOpener, HttpParser, HttpRenderer, Request, Response, Result, double_copy};
+use crate::{DductError, FileOpener, HttpParser, HttpRenderer, Request, Response, Result, double_copy, resolve_addr};
 use futures::future::{self};
 use http::header::{self};
 use http::method::Method;
 use http::status::StatusCode;
 use http::uri::{Scheme, Uri};
-use std::net::SocketAddr;
+use std::collections::HashSet;
+use std::iter::Iterator;
+use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use tokio::fs::{File, remove_file, rename};
 use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
@@ -17,8 +19,9 @@ pub struct ProxyEngine<S> {
     pub closed: bool,
     pub maybe_mitm_addr: Option<SocketAddr>,
     pub maybe_client_id: Option<Identity>,
-    pub cached_sans: Vec<String>,
+    pub cached_sans: HashSet<String>,
     pub file_opener: FileOpener,
+    pub ifaddrs: HashSet<IpAddr>,
 }
 
 impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
@@ -29,16 +32,14 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
         server_dns_sans: Vec<String>,
         server_ip_sans: Vec<String>,
         file_opener: FileOpener,
+        ifaddrs: HashSet<IpAddr>,
     ) -> Self {
         let closed = false;
-        let cached_sans: Vec<String> = [
-            server_dns_sans
-                .iter()
-                .map(|s| s.strip_prefix("*").map(|s| s.into()).or(Some(s.to_owned())).unwrap())
-                .collect(),
-            server_ip_sans,
-        ].concat();
-        Self { stream, closed, maybe_mitm_addr, maybe_client_id, cached_sans, file_opener }
+        let cached_sans = server_dns_sans.iter().cloned()
+            .map(|s| s.strip_prefix("*").map(|s| s.into()).or(Some(s.to_owned())).unwrap())
+            .chain(server_ip_sans.iter().cloned())
+            .collect();
+        Self { stream, closed, maybe_mitm_addr, maybe_client_id, cached_sans, file_opener, ifaddrs }
     }
 
     async fn recv_request(&mut self) -> Result<Option<Request>> {
@@ -172,26 +173,17 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
     async fn tcp_connect(&mut self, req: &mut Request) -> Result<TcpStream> {
         log::debug!("tcp_connect(): {:?} {:?} {:?}", req.method(), req.uri(), req.headers());
 
-        let host = req.uri().host().unwrap();
-        let port = req.uri().port().map(|p| p.as_u16()).or(Some(80)).unwrap();
+        let (addr, _) = resolve_addr(req).await?;
 
-        let stream = TcpStream::connect(format!("{}:{}", host, port)).await?;
+        let stream = TcpStream::connect(addr).await?;
 
-        Ok(stream)
+        return Ok(stream);
     }
 
     async fn tls_connect(&mut self, req: &mut Request) -> Result<TlsStream<TcpStream>> {
         log::debug!("tls_connect(): REQ {:?} {:?} {:?}", req.method(), req.uri(), req.headers());
 
-        let uri: Uri = req.headers()
-            .get(header::HOST)
-            .unwrap()
-            .to_str()
-            .map_err(|_| DductError::BadRequest)?
-            .parse()
-            .map_err(|_| DductError::BadRequest)?;
-        let host = uri.host().unwrap();
-        let port = uri.port().map(|p| p.as_u16()).or(Some(443)).unwrap();
+        let (addr, domain) = resolve_addr(req).await?;
 
         let connector = native_tls::TlsConnector::builder()
             .identity(self.maybe_client_id.as_ref().unwrap().to_owned())
@@ -199,10 +191,10 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
             .build()?;
         let connector = TlsConnector::from(connector);
 
-        let stream = TcpStream::connect(format!("{}:{}", host, port)).await?;
-        let stream = connector.connect(host, stream).await?;
+        let stream = TcpStream::connect(addr).await?;
+        let stream = connector.connect(domain.as_str(), stream).await?;
 
-        Ok(stream)
+        return Ok(stream);
     }
 
     async fn _proxy_request<P>(&mut self, req: &mut Request,
@@ -238,7 +230,7 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
                         req.uri().path(),
                     );
                     let location = rsp.headers().get(header::LOCATION).unwrap();
-                    let uri = location.to_str().unwrap().parse::<Uri>().unwrap();
+                    let uri: Uri = location.to_str().unwrap().parse().unwrap();
                     *req.uri_mut() = uri.to_owned();
                     req.headers_mut().remove(header::AUTHORIZATION);
                     req.headers_mut().remove(header::HOST);
@@ -246,8 +238,12 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
                     req.headers_mut().insert(header::REFERER, referer.parse().unwrap());
                     Err(DductError::Redirected)
                 },
-                StatusCode::OK if cached => {
-                    match self.file_opener.open_partial_wo_or_ro(req, maybe_path).await {
+                StatusCode::OK if cached => match self.file_opener.open_ro(req).await {
+                    Ok((mut file, length)) if maybe_length == Some(length) => {
+                        peer_engine.shutdown().await.ok();
+                        self.send_file(&mut file, Some(length)).await
+                    },
+                    _ => match self.file_opener.open_partial_wo_or_ro(req, maybe_path).await {
                         Ok((mut file, tmp_path, path, write_only)) => {
                             if write_only {
                                 let copy_data = async {
@@ -258,7 +254,7 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
                                 };
                                 match copy_data.await {
                                     Ok(()) => {
-                                        rename(tmp_path.as_path(), path.as_path()).await?;
+                                        rename(tmp_path.as_path(), path.as_path()).await?; // replace
                                         Ok(())
                                     },
                                     Err(e) => {
@@ -286,43 +282,42 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
     }
 
     async fn proxy_request(&mut self, req: &mut Request, cached: bool) -> Result<()> {
-        let path = self.file_opener.get_path(req);
-        if req.uri().scheme() == Some(&Scheme::HTTP) {
-            loop {
+        loop {
+            if req.uri().scheme() == Some(&Scheme::HTTP) {
                 let peer_stream = self.tcp_connect(req).await?;
                 let mut peer_engine = ProxyEngine::new(
                     peer_stream,
                     None,
                     None,
-                    vec![],
-                    vec![],
+                    Vec::new(),
+                    Vec::new(),
                     FileOpener::new(self.file_opener.file_dir.as_path(), None),
+                    HashSet::new(),
                 );
                 let result = self._proxy_request(
                     req,
                     cached,
-                    Some(path.to_owned()),
+                    Some(self.file_opener.get_path(req)),
                     &mut peer_engine,
                 ).await;
                 peer_engine.shutdown().await.ok();
                 if let Err(DductError::Redirected) = result { continue; }
                 return result;
-            }
-        } else {
-            loop {
+            } else {
                 let peer_stream = self.tls_connect(req).await?;
                 let mut peer_engine = ProxyEngine::new(
                     peer_stream,
                     None,
                     None,
-                    vec![],
-                    vec![],
+                    Vec::new(),
+                    Vec::new(),
                     FileOpener::new(self.file_opener.file_dir.as_path(), None),
+                    HashSet::new(),
                 );
                 let result = self._proxy_request(
                     req,
                     cached,
-                    Some(path.to_owned()),
+                    Some(self.file_opener.get_path(req)),
                     &mut peer_engine,
                 ).await;
                 peer_engine.shutdown().await.ok();
@@ -346,16 +341,7 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
             let mitm_addr = self.maybe_mitm_addr.unwrap();
             TcpStream::connect(mitm_addr).await?
         } else {
-            let port = if let Some(port) = req.uri().port_u16() {
-                port
-            } else {
-                if req.uri().scheme() == Some(&Scheme::HTTPS) {
-                    443
-                } else {
-                    80
-                }
-            };
-            let addr = format!("{}:{}", host, port);
+            let (addr, _) = resolve_addr(req).await?;
             TcpStream::connect(addr).await?
         };
         let rsp = http::Response::builder()
@@ -374,17 +360,22 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
 
     async fn handle_get(&mut self, req: &mut Request) -> Result<()> {
         log::debug!("handle_get(): REQ {:?} {:?} {:?}", req.method(), req.uri(), req.headers());
-        match self.file_opener.open_ro(req).await {
-            Ok((mut file, length)) => {
-                self.send_file(&mut file, Some(length)).await
-            },
-            Err(DductError::NotAFile) => {
-                self.proxy_request(req, false).await
-            },
-            Err(DductError::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound => {
-                self.proxy_request(req, self.file_opener.is_cached(req)).await
-            },
-            Err(e) => Err(e),
+        if self.file_opener.is_cached(req) {
+            self.proxy_request(req, true).await
+        } else {
+            match self.file_opener.open_ro(req).await {
+                // Handle static content.
+                Ok((mut file, length)) => {
+                    self.send_file(&mut file, Some(length)).await
+                },
+                Err(_) => {
+                    if self.ifaddrs.contains(&resolve_addr(req).await?.0.ip()) {
+                        Err(DductError::LoopDetected)
+                    } else {
+                        self.proxy_request(req, false).await
+                    }
+                },
+            }
         }
     }
 
@@ -405,10 +396,11 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
         Ok(())
     }
 
-    async fn dispatch_error(&mut self, error: &DductError) -> Result<()> {
-        let status = match error {
+    async fn dispatch_error(&mut self, e: &DductError) -> Result<()> {
+        let status = match e {
             DductError::BadRequest => StatusCode::BAD_REQUEST,
             DductError::InternalServerError => StatusCode::INTERNAL_SERVER_ERROR,
+            DductError::LoopDetected => StatusCode::LOOP_DETECTED,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         self.send_empty_response(status).await
@@ -423,9 +415,9 @@ impl<S> ProxyEngine<S> where S: AsyncReadExt + AsyncWriteExt + Unpin {
     }
 
     pub async fn run(&mut self) -> Result<()> {
-        if let Err(ref err) = self.dispatch_request().await {
-            log::error!("{:?}", err);
-            self.dispatch_error(err).await.ok();
+        if let Err(ref e) = self.dispatch_request().await {
+            log::error!("{:?}", e);
+            self.dispatch_error(e).await.ok();
         }
         self.shutdown().await.ok();
         Ok(())

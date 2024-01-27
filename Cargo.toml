@@ -25,7 +25,7 @@ env_logger = "*"
 futures = "*"
 http = "*"
 log = "*"
-nix = { version = "*", features = ["fs"] }
+nix = { version = "*", features = ["fs", "net"] }
 openssl = "*"
 regex = "*"
 serde = { version = "*", features = ["derive"] }

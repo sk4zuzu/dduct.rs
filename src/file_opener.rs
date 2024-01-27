@@ -62,16 +62,6 @@ impl FileOpener {
         }
     }
 
-    pub async fn open_partial_ro(&self, req: &Request) -> Result<(File, PathBuf, PathBuf)> {
-        let (tmp_path, path) = self.get_partial_path(req, None);
-        let tmp_file = OpenOptions::new()
-            .read(true)
-            .write(false)
-            .open(tmp_path.as_path())
-            .await?;
-        Ok((tmp_file, tmp_path, path))
-    }
-
     pub async fn open_partial_wo_or_ro(&self, req: &Request, maybe_path: Option<PathBuf>) -> Result<(File, PathBuf, PathBuf, bool)> {
         let (tmp_path, path) = self.get_partial_path(req, maybe_path);
         create_dir_all(tmp_path.parent().unwrap())?;

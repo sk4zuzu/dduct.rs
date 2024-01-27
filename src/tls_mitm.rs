@@ -1,4 +1,4 @@
-use crate::{FileOpener, ProxyEngine, Result, SslCerts};
+use crate::{FileOpener, ProxyEngine, Result, SslCerts, detect_ifaddrs};
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tokio_native_tls::TlsAcceptor;
@@ -37,6 +37,7 @@ impl<'a> TlsMitm<'a> {
             let server_dns_sans = self.ssl_certs.server_dns_sans.to_owned();
             let server_ip_sans = self.ssl_certs.server_ip_sans.to_owned();
             let file_opener = self.file_opener.to_owned();
+            let ifaddrs = detect_ifaddrs()?;
 
             tokio::spawn(async move {
                 let stream = acceptor.accept(stream).await?;
@@ -47,6 +48,7 @@ impl<'a> TlsMitm<'a> {
                     server_dns_sans,
                     server_ip_sans,
                     file_opener,
+                    ifaddrs,
                 ).run().await
             });
         }

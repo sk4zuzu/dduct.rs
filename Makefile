@@ -15,7 +15,7 @@ DOCKER_DIND_VERSION := 24.0.7-alpine3.19
 PODMAN_PINP_VERSION := v4.8.1
 
 ARTIFACT1 ?= docker.io/library/ubuntu:22.04
-ARTIFACT2 ?= https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-6.6.8.tar.xz
+ARTIFACT2 ?= https://prod-cdn.packages.k8s.io/repositories/isv:/kubernetes:/core:/stable:/v1.27/deb/amd64/kubectl_1.27.2-1.1_amd64.deb
 
 NO_CACHE ?=
 
@@ -25,6 +25,7 @@ _HTTPS_PROXY_ := $(_HTTP_PROXY_)
 export
 
 .PHONY: all t test b build d debug c clean
+.PHONY: t-curl test-curl
 
 all: build
 
@@ -33,6 +34,9 @@ t test:
 
 t-% test-%:
 	cd $(SELF)/ && cargo test $* -- --nocapture
+
+t-curl test-curl:
+	$(SHELL) $(SELF)/tests/curl.sh $(ARTIFACT2)
 
 b build:
 	cd $(SELF)/ && cargo build
@@ -103,7 +107,3 @@ skopeo-pull:
 	skopeo --debug --insecure-policy \
 	copy --src-tls-verify=false \
 	docker://$(ARTIFACT1) dir:$$(mktemp -d /tmp/dduct-skopeo-XXXX)
-.PHONY: t-curl test-curl
-
-t-curl test-curl:
-	$(SHELL) $(SELF)/tests/curl.sh $(ARTIFACT2)

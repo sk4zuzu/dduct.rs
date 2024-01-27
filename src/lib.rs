@@ -7,6 +7,9 @@ pub use double_copy::*;
 mod file_opener;
 pub use file_opener::*;
 
+mod helpers;
+pub use helpers::*;
+
 mod http_parser;
 pub use http_parser::*;
 
